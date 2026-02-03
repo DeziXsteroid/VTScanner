@@ -1,3 +1,11 @@
+## Загрузка актуальной версии
+
+<p align="center">
+  <a href="https://github.com/DeziXsteroid/Network-Tools-VTS-/releases/download/0.9_Beta/VTScanner.exe">
+    <img alt="Download VTScanner" src="https://img.shields.io/badge/Download-VTScanner.exe-brightgreen?style=for-the-badge">
+  </a>
+</p>
+
 ## ✅ Функционал VTScanner
 
 | Модуль | Что делает | Где используется |
@@ -6,18 +14,6 @@
 | UDP/TCP/Serial | Отправка данных и команд | Управление оборудованием и тест протокола|
 | Send Request | Отправка запросов по ссылке или ip | Тест запроса и доступа |
 | Logs | единый вывод событий/ответов | удобно отлаживать и сохранять результаты |
-
-<p align="center">
-  <a href="https://github.com/<USER>/<REPO>/releases/latest/download/<FILENAME>.zip">
-    <img alt="Download latest" src="https://img.shields.io/badge/Download-Latest%20Build-brightgreen?style=for-the-badge">
-  </a>
-  <a href="https://github.com/<USER>/<REPO>/releases/latest">
-    <img alt="Release page" src="https://img.shields.io/badge/Release-Notes-blue?style=for-the-badge">
-  </a>
-</p>
-
-> ✅ Кнопка **Download** скачивает файл сразу.  
-> Для этого файл должен лежать в **Releases** и называться **точно так же**, как `<FILENAME>.zip`.
 
 ---
 
@@ -55,10 +51,3 @@
 - Выбери тип: **TCP / UDP / Serial**
 - Укажи адрес/порт/COM и payload
 - Жми **Send** → ответ будет в логах
-
----
-
-## Пример работы:
-<p align="center">
-  <img src="assets/screenshots/main.png" width="900">
-</p>
