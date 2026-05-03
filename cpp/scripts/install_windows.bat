@@ -5,7 +5,7 @@ set ROOT_DIR=%~dp0\..\..
 set ROOT_DIR=%ROOT_DIR:\/=%
 for %%I in ("%ROOT_DIR%") do set ROOT_DIR=%%~fI
 set PACKAGE_DIR=%ROOT_DIR%\cpp\dist\NetworkToolsQt
-set TARGET_DIR=%ProgramFiles%\Network Tools 1.0.6
+set TARGET_DIR=%ProgramFiles%\Network Tools 1.0.7
 set APPDATA_DIR=%APPDATA%\NetWorkTools
 set DATA_DIR=%APPDATA_DIR%\data
 set MANUF_PATH=%DATA_DIR%\manuf
