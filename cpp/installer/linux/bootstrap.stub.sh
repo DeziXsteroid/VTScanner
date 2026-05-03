@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_NAME="Network Tools 1.0.5"
+APP_NAME="Network Tools 1.0.6"
 APP_VERSION="__APP_VERSION__"
 SELF_PATH="$0"
 WORK_DIR="$(mktemp -d)"
 PAYLOAD_DIR=""
 LANG_CODE="ru"
-INSTALL_DIR_DEFAULT="$HOME/.local/opt/Network-Tools-1.0.5"
+INSTALL_DIR_DEFAULT="$HOME/.local/opt/Network-Tools-1.0.6"
 INSTALL_DIR="$INSTALL_DIR_DEFAULT"
 CREATE_SHORTCUT="yes"
 INSTALL_DEPS="yes"
@@ -41,8 +41,8 @@ text() {
     en:unsupported_pm) printf '%s' 'Could not detect a supported Linux package manager. Install Qt6 and CMake manually.' ;;
     ru:launch_now) printf '%s' 'Запустить приложение сейчас?' ;;
     en:launch_now) printf '%s' 'Launch the application now?' ;;
-    ru:desktop_name) printf '%s' 'Network Tools 1.0.5' ;;
-    en:desktop_name) printf '%s' 'Network Tools 1.0.5' ;;
+    ru:desktop_name) printf '%s' 'Network Tools 1.0.6' ;;
+    en:desktop_name) printf '%s' 'Network Tools 1.0.6' ;;
     *) printf '%s' "$key" ;;
   esac
 }
@@ -55,7 +55,7 @@ abort_install() {
 choose_language() {
   if command -v zenity >/dev/null 2>&1; then
     local choice
-    choice="$(zenity --list --radiolist --title="Network Tools 1.0.5" --text="$(text choose_language)" --column="" --column="Language" TRUE "Русский" FALSE "English" --height=220 --width=360)" || abort_install
+    choice="$(zenity --list --radiolist --title="Network Tools 1.0.6" --text="$(text choose_language)" --column="" --column="Language" TRUE "Русский" FALSE "English" --height=220 --width=360)" || abort_install
     if [[ "$choice" == "English" ]]; then
       LANG_CODE="en"
     else
@@ -75,7 +75,7 @@ choose_language() {
 choose_install_dir() {
   if command -v zenity >/dev/null 2>&1; then
     local choice
-    choice="$(zenity --file-selection --directory --title="Network Tools 1.0.5" --filename="$INSTALL_DIR_DEFAULT/" 2>/dev/null)" || abort_install
+    choice="$(zenity --file-selection --directory --title="Network Tools 1.0.6" --filename="$INSTALL_DIR_DEFAULT/" 2>/dev/null)" || abort_install
     INSTALL_DIR="$choice"
     return
   fi
@@ -90,7 +90,7 @@ ask_yes_no() {
   local prompt_key="$1"
   local default_value="$2"
   if command -v zenity >/dev/null 2>&1; then
-    if zenity --question --title="Network Tools 1.0.5" --text="$(text "$prompt_key")"; then
+    if zenity --question --title="Network Tools 1.0.6" --text="$(text "$prompt_key")"; then
       printf '%s' yes
     else
       printf '%s' no

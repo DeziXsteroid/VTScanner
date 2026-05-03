@@ -57,20 +57,20 @@ fi
 rm -rf "$INSTALLER_APP" "$DMG_PATH"
 osacompile -o "$INSTALLER_APP" "$INSTALLER_TEMPLATE"
 mkdir -p "$PAYLOAD_DIR"
-cp -R "$PACKAGED_APP" "$PAYLOAD_DIR/Network Tools 1.0.5.app"
+cp -R "$PACKAGED_APP" "$PAYLOAD_DIR/Network Tools 1.0.6.app"
 cp "$MANUF_TMP" "$PAYLOAD_DIR/manuf"
 cp "$CPP_DIR/resources/app.icns" "$INSTALLER_APP/Contents/Resources/applet.icns"
 cp "$CPP_DIR/resources/app.icns" "$INSTALLER_APP/Contents/Resources/droplet.icns"
 plist_write "CFBundleIdentifier" "local.networktools.qt.installer"
-plist_write "CFBundleName" "Install Network Tools 1.0.5"
-plist_write "CFBundleDisplayName" "Install Network Tools 1.0.5"
+plist_write "CFBundleName" "Install Network Tools 1.0.6"
+plist_write "CFBundleDisplayName" "Install Network Tools 1.0.6"
 plist_write "CFBundleIconFile" "applet"
 codesign --force --deep --sign - --timestamp=none "$INSTALLER_APP"
 codesign --verify --deep --strict --verbose=1 "$INSTALLER_APP"
 
 mkdir -p "$STAGE_DIR"
 cp -R "$INSTALLER_APP" "$STAGE_DIR/"
-hdiutil create -volname "Network Tools 1.0.5 Installer" -srcfolder "$STAGE_DIR" -ov -format UDZO "$DMG_PATH" >/dev/null
+hdiutil create -volname "Network Tools 1.0.6 Installer" -srcfolder "$STAGE_DIR" -ov -format UDZO "$DMG_PATH" >/dev/null
 
 echo "Installer app: $INSTALLER_APP"
 echo "DMG: $DMG_PATH"
