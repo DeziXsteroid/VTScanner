@@ -13,7 +13,7 @@
 
 <div align="center">
 
-## Install from Terminal
+## Install from MacOS Terminal
 
 <code>curl -L "https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest/download/Network-Tools-macos-apple-silicon.dmg" -o "Network-Tools-macos-apple-silicon.dmg"</code><br>
 <code>hdiutil attach "Network-Tools-macos-apple-silicon.dmg"</code><br>
