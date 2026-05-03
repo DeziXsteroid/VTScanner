@@ -140,7 +140,7 @@ QJsonObject SettingsService::defaultConfig() {
             {QStringLiteral("host"), QString()},
             {QStringLiteral("port"), 161},
             {QStringLiteral("version"), QStringLiteral("2c")},
-            {QStringLiteral("read_community"), QStringLiteral("public")},
+            {QStringLiteral("read_community"), QString()},
             {QStringLiteral("write_community"), QString()},
             {QStringLiteral("v3_user"), QString()},
             {QStringLiteral("v3_security_level"), QStringLiteral("noAuthNoPriv")},

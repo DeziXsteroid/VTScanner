@@ -312,6 +312,29 @@ QString extractResolvedNameFromPingOutput(const QString& output, const QString& 
     return {};
 }
 
+QString reverseLookupName(const QString& ip) {
+#ifdef Q_OS_MACOS
+    int exitStatus = -1;
+    const QString output = runCommandCapture(
+        QStringLiteral("dscacheutil"),
+        {QStringLiteral("-q"), QStringLiteral("host"), QStringLiteral("-a"), QStringLiteral("ip_address"), ip},
+        true,
+        &exitStatus
+    );
+    if (exitStatus < 0) {
+        return {};
+    }
+    static const QRegularExpression nameRe(QStringLiteral("^name:\\s+(.+)$"), QRegularExpression::MultilineOption);
+    const auto match = nameRe.match(output);
+    if (match.hasMatch()) {
+        return normalizeResolvedName(match.captured(1), ip);
+    }
+#else
+    Q_UNUSED(ip)
+#endif
+    return {};
+}
+
 QString routeDisplayForHost(const AdapterInfo& adapter, const ScanRecord& row) {
     if (row.onLink) {
         return adapter.id.isEmpty()
@@ -1120,9 +1143,20 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
     if (!prefetchedPingDisplay.isEmpty()) {
         ping.success = true;
         ping.display = prefetchedPingDisplay;
+        resolvedName = cachedResolvedName(ip, QString());
+        if (resolvedName.isEmpty()) {
+            const auto nameProbe = pingHost(ip, adapter.ip);
+            resolvedName = nameProbe.resolvedName;
+            if (resolvedName.isEmpty()) {
+                resolvedName = reverseLookupName(ip);
+            }
+        }
     } else {
         ping = pingHost(ip, adapter.ip);
         resolvedName = ping.resolvedName;
+        if (resolvedName.isEmpty()) {
+            resolvedName = reverseLookupName(ip);
+        }
     }
     row.pingDisplay = ping.display.isEmpty() ? QStringLiteral("[n/a]") : ping.display;
     row.mac = m_prefetchedMacs.value(ip, QStringLiteral("-"));

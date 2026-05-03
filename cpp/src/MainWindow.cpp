@@ -2651,7 +2651,7 @@ QWidget* MainWindow::createSnmpPage() {
     m_snmpWidgets.versionCombo->setCurrentIndex(qMax(0, m_snmpWidgets.versionCombo->findData(snmpSection.value(QStringLiteral("version")).toString(QStringLiteral("2c")))));
     m_snmpWidgets.hostEdit->setText(snmpSection.value(QStringLiteral("host")).toString());
     m_snmpWidgets.portSpin->setValue(snmpSection.value(QStringLiteral("port")).toInt(161));
-    m_snmpWidgets.communityEdit->setText(snmpSection.value(QStringLiteral("read_community")).toString(QStringLiteral("public")));
+    m_snmpWidgets.communityEdit->setText(snmpSection.value(QStringLiteral("read_community")).toString());
     m_snmpWidgets.writeCommunityEdit->setText(snmpSection.value(QStringLiteral("write_community")).toString());
     m_snmpWidgets.v3UserEdit->setText(snmpSection.value(QStringLiteral("v3_user")).toString());
     m_snmpWidgets.v3SecurityLevelCombo->setCurrentIndex(qMax(0, m_snmpWidgets.v3SecurityLevelCombo->findData(snmpSection.value(QStringLiteral("v3_security_level")).toString(QStringLiteral("noAuthNoPriv")))));
