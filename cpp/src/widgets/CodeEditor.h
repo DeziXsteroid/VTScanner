@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QEvent>
 #include <QPaintEvent>
 #include <QPlainTextEdit>
 #include <QResizeEvent>
@@ -16,6 +17,7 @@ public:
     void setJsonMode(bool enabled);
 
 protected:
+    void changeEvent(QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
 
 public:

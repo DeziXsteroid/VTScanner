@@ -10,6 +10,7 @@
 
 class QComboBox;
 class QCheckBox;
+class QAction;
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -24,6 +25,7 @@ class QTableWidget;
 class QTableWidgetItem;
 class QTextEdit;
 class QTimer;
+class QToolButton;
 
 namespace nt {
 class HttpRequestService;
@@ -65,16 +67,20 @@ private:
     };
 
     struct SnmpWidgets {
-        QListWidget* profiles {nullptr};
-        QLineEdit* nameEdit {nullptr};
         QLineEdit* hostEdit {nullptr};
         QSpinBox* portSpin {nullptr};
         QComboBox* versionCombo {nullptr};
         QLineEdit* communityEdit {nullptr};
         QLineEdit* writeCommunityEdit {nullptr};
-        QLineEdit* baseOidEdit {nullptr};
+        QStackedWidget* securityStack {nullptr};
+        QLineEdit* filterEdit {nullptr};
+        QLineEdit* v3UserEdit {nullptr};
+        QComboBox* v3SecurityLevelCombo {nullptr};
+        QComboBox* v3AuthProtocolCombo {nullptr};
+        QLineEdit* v3AuthPasswordEdit {nullptr};
+        QComboBox* v3PrivacyProtocolCombo {nullptr};
+        QLineEdit* v3PrivacyPasswordEdit {nullptr};
         QPushButton* loadButton {nullptr};
-        QPushButton* saveButton {nullptr};
         QLabel* statusLabel {nullptr};
         QTableWidget* table {nullptr};
     };
@@ -145,6 +151,13 @@ private:
     void refreshFavoritesMenu();
     void showSnapshotDiffDialog(const nt::SnapshotMeta& meta, const nt::SnapshotDiffSummary& summary);
     void clearScanTable();
+    void rebuildScanTable();
+    void applyScanTableFilter();
+    void applyScanColumnVisibility();
+    void saveScanColumnVisibility() const;
+    void updateScanSortButton();
+    void toggleScanSortOrder();
+    void refreshScanToolbarIcons();
     void appendScanRecord(const nt::ScanRecord& record);
     void finalizeScan(const QList<nt::ScanRecord>& records, int durationMs);
     void updateScanSummary();
@@ -157,15 +170,14 @@ private:
     void openScanRowPing(int row);
     void openScanRowSession(const QString& kind, int row);
     void prepareSessionFromScan(SessionWidgets& widgets, const QString& host, quint16 port, const QString& kindLabel, int pageIndex);
-    void loadSnmpProfiles();
-    void applySnmpProfile(const nt::SessionProfile& profile);
     nt::SessionProfile currentSnmpProfile() const;
-    void saveSnmpProfile();
-    void deleteSnmpProfile();
-    void newSnmpProfile();
     void loadSnmpOidList();
     void applySnmpSelectedValue();
     void handleSnmpValueEdited(QTableWidgetItem* item);
+    void refreshSnmpVersionUi();
+    void applySnmpTableFilter();
+    void persistSnmpSettingsFromUi();
+    QStringList currentSnmpAuthArgs(bool forWrite, QString* errorText = nullptr) const;
     static int findRowByIp(QTableWidget* table, const QString& ip);
 
     void sendHttpRequest();
@@ -226,9 +238,14 @@ private:
     QLabel* m_scanFooterStateLabel {nullptr};
     QLabel* m_scanFooterDisplayLabel {nullptr};
     QLabel* m_scanFooterThreadsLabel {nullptr};
+    QLineEdit* m_scanFilterEdit {nullptr};
     QTableWidget* m_scanTable {nullptr};
     QPushButton* m_scanStartButton {nullptr};
+    QPushButton* m_scanSortButton {nullptr};
     QPushButton* m_scanStopButton {nullptr};
+    QToolButton* m_scanToolsButton {nullptr};
+    QMenu* m_scanToolsMenu {nullptr};
+    QMap<int, QAction*> m_scanColumnActions;
     QTimer* m_scanAutoScanTimer {nullptr};
     QMap<QString, QLabel*> m_hostLabels;
     QList<nt::ScanRecord> m_scanRows;
@@ -236,6 +253,8 @@ private:
     QSet<QString> m_scanNewIps;
     bool m_scanCompareMode {false};
     bool m_scanCompareHasBaseline {false};
+    bool m_scanSortAscending {true};
+    bool m_scanLaunchPending {false};
     quint64 m_currentScanGeneration {0};
 
     QComboBox* m_requestMethodCombo {nullptr};

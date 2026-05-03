@@ -61,6 +61,7 @@ struct ScanRecord {
     QString gateway;
     QString mask;
     QString vendor;
+    QString hostName;
     QString typeHint;
     QString name;
     bool onLink {false};
@@ -80,6 +81,15 @@ struct SessionProfile {
     quint16 port {0};
     QString username;
     QString password;
+    QString protocolVersion;
+    QString snmpReadCommunity;
+    QString snmpWriteCommunity;
+    QString snmpV3User;
+    QString snmpV3SecurityLevel;
+    QString snmpV3AuthProtocol;
+    QString snmpV3AuthPassword;
+    QString snmpV3PrivacyProtocol;
+    QString snmpV3PrivacyPassword;
 };
 
 struct SnapshotMeta {
@@ -144,6 +154,15 @@ inline QJsonObject sessionProfileToJson(const SessionProfile& profile) {
         {QStringLiteral("port"), static_cast<int>(profile.port)},
         {QStringLiteral("username"), profile.username},
         {QStringLiteral("password"), profile.password},
+        {QStringLiteral("protocol_version"), profile.protocolVersion},
+        {QStringLiteral("snmp_read_community"), profile.snmpReadCommunity},
+        {QStringLiteral("snmp_write_community"), profile.snmpWriteCommunity},
+        {QStringLiteral("snmp_v3_user"), profile.snmpV3User},
+        {QStringLiteral("snmp_v3_security_level"), profile.snmpV3SecurityLevel},
+        {QStringLiteral("snmp_v3_auth_protocol"), profile.snmpV3AuthProtocol},
+        {QStringLiteral("snmp_v3_auth_password"), profile.snmpV3AuthPassword},
+        {QStringLiteral("snmp_v3_privacy_protocol"), profile.snmpV3PrivacyProtocol},
+        {QStringLiteral("snmp_v3_privacy_password"), profile.snmpV3PrivacyPassword},
     };
 }
 
@@ -154,8 +173,20 @@ inline SessionProfile sessionProfileFromJson(const QJsonObject& object, quint16 
     profile.port = static_cast<quint16>(object.value(QStringLiteral("port")).toInt(defaultPort));
     profile.username = object.value(QStringLiteral("username")).toString();
     profile.password = object.value(QStringLiteral("password")).toString();
+    profile.protocolVersion = object.value(QStringLiteral("protocol_version")).toString();
+    profile.snmpReadCommunity = object.value(QStringLiteral("snmp_read_community")).toString(profile.username);
+    profile.snmpWriteCommunity = object.value(QStringLiteral("snmp_write_community")).toString(profile.password);
+    profile.snmpV3User = object.value(QStringLiteral("snmp_v3_user")).toString();
+    profile.snmpV3SecurityLevel = object.value(QStringLiteral("snmp_v3_security_level")).toString(QStringLiteral("noAuthNoPriv"));
+    profile.snmpV3AuthProtocol = object.value(QStringLiteral("snmp_v3_auth_protocol")).toString(QStringLiteral("SHA"));
+    profile.snmpV3AuthPassword = object.value(QStringLiteral("snmp_v3_auth_password")).toString();
+    profile.snmpV3PrivacyProtocol = object.value(QStringLiteral("snmp_v3_privacy_protocol")).toString(QStringLiteral("AES"));
+    profile.snmpV3PrivacyPassword = object.value(QStringLiteral("snmp_v3_privacy_password")).toString();
     if (profile.port == 0) {
         profile.port = defaultPort;
+    }
+    if (profile.protocolVersion.trimmed().isEmpty()) {
+        profile.protocolVersion = QStringLiteral("2c");
     }
     return profile;
 }

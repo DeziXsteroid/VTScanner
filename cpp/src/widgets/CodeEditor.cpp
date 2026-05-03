@@ -7,6 +7,17 @@
 
 namespace {
 
+QColor mixColor(const QColor& first, const QColor& second, qreal ratio) {
+    const qreal clampedRatio = qBound(0.0, ratio, 1.0);
+    const qreal inverse = 1.0 - clampedRatio;
+    return QColor(
+        qRound(first.red() * inverse + second.red() * clampedRatio),
+        qRound(first.green() * inverse + second.green() * clampedRatio),
+        qRound(first.blue() * inverse + second.blue() * clampedRatio),
+        qRound(first.alpha() * inverse + second.alpha() * clampedRatio)
+    );
+}
+
 class JsonSyntaxHighlighter final : public QSyntaxHighlighter {
 public:
     explicit JsonSyntaxHighlighter(QTextDocument* document)
@@ -121,16 +132,36 @@ void CodeEditor::resizeEvent(QResizeEvent* event) {
     m_lineNumberArea->setGeometry(QRect(rect.left(), rect.top(), lineNumberAreaWidth(), rect.height()));
 }
 
+void CodeEditor::changeEvent(QEvent* event) {
+    QPlainTextEdit::changeEvent(event);
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
+        highlightCurrentLine();
+        if (m_lineNumberArea != nullptr) {
+            m_lineNumberArea->update();
+        }
+        viewport()->update();
+    }
+}
+
 void CodeEditor::lineNumberAreaPaintEvent(QPaintEvent* event) {
     QPainter painter(m_lineNumberArea);
-    painter.fillRect(event->rect(), QColor("#11161b"));
+    const QColor base = palette().base().color();
+    const QColor text = palette().text().color();
+    const bool lightTheme = base.lightness() >= 150;
+    const QColor gutter = lightTheme
+        ? mixColor(base, QColor("#dbe2ea"), 0.65)
+        : mixColor(base, QColor("#1c232b"), 0.55);
+    const QColor numberColor = lightTheme
+        ? mixColor(text, QColor("#6b7785"), 0.32)
+        : mixColor(text, QColor("#9aa5b2"), 0.38);
+    painter.fillRect(event->rect(), gutter);
 
     QTextBlock block = firstVisibleBlock();
     int blockNumber = block.blockNumber();
     int top = qRound(blockBoundingGeometry(block).translated(contentOffset()).top());
     int bottom = top + qRound(blockBoundingRect(block).height());
 
-    painter.setPen(QColor("#7d8793"));
+    painter.setPen(numberColor);
     while (block.isValid() && top <= event->rect().bottom()) {
         if (block.isVisible() && bottom >= event->rect().top()) {
             painter.drawText(0, top, m_lineNumberArea->width() - 6, fontMetrics().height(), Qt::AlignRight, QString::number(blockNumber + 1));
@@ -161,7 +192,9 @@ void CodeEditor::highlightCurrentLine() {
     QList<QTextEdit::ExtraSelection> selections;
     if (!isReadOnly()) {
         QTextEdit::ExtraSelection selection;
-        selection.format.setBackground(QColor(255, 255, 255, 12));
+        const QColor base = palette().base().color();
+        const bool lightTheme = base.lightness() >= 150;
+        selection.format.setBackground(lightTheme ? QColor(84, 112, 142, 18) : QColor(255, 255, 255, 12));
         selection.format.setProperty(QTextFormat::FullWidthSelection, true);
         selection.cursor = textCursor();
         selection.cursor.clearSelection();

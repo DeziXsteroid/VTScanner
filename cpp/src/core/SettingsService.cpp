@@ -86,8 +86,8 @@ void SettingsService::setValue(const QString& key, const QJsonValue& value) {
 
 QSize SettingsService::initialWindowSize() const {
     const auto object = section(QStringLiteral("window"));
-    const int width = qBound(860, object.value(QStringLiteral("width")).toInt(920), 980);
-    const int height = qBound(455, object.value(QStringLiteral("height")).toInt(490), 540);
+    const int width = qBound(840, object.value(QStringLiteral("width")).toInt(874), 920);
+    const int height = qBound(440, object.value(QStringLiteral("height")).toInt(472), 522);
     return QSize(width, height);
 }
 
@@ -133,8 +133,23 @@ QJsonObject SettingsService::defaultConfig() {
         {QStringLiteral("vendor_auto_update"), true},
         {QStringLiteral("http_history"), QJsonArray{}},
         {QStringLiteral("window"), QJsonObject{
-            {QStringLiteral("width"), 920},
-            {QStringLiteral("height"), 490},
+            {QStringLiteral("width"), 874},
+            {QStringLiteral("height"), 472},
+        }},
+        {QStringLiteral("snmp"), QJsonObject{
+            {QStringLiteral("host"), QString()},
+            {QStringLiteral("port"), 161},
+            {QStringLiteral("version"), QStringLiteral("2c")},
+            {QStringLiteral("read_community"), QStringLiteral("public")},
+            {QStringLiteral("write_community"), QString()},
+            {QStringLiteral("v3_user"), QString()},
+            {QStringLiteral("v3_security_level"), QStringLiteral("noAuthNoPriv")},
+            {QStringLiteral("v3_auth_protocol"), QStringLiteral("SHA")},
+            {QStringLiteral("v3_auth_password"), QString()},
+            {QStringLiteral("v3_privacy_protocol"), QStringLiteral("AES")},
+            {QStringLiteral("v3_privacy_password"), QString()},
+            {QStringLiteral("base_oid"), QStringLiteral(".1")},
+            {QStringLiteral("profiles"), QJsonArray()},
         }},
         {QStringLiteral("ssh"), QJsonObject{
             {QStringLiteral("host"), QStringLiteral("127.0.0.1")},

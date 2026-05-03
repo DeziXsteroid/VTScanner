@@ -12,11 +12,14 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QNetworkInterface>
+#include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QThread>
 #include <QThreadPool>
+#include <QTimer>
+#include <QUdpSocket>
 #include <QtConcurrent>
 
 #include <algorithm>
@@ -195,6 +198,120 @@ QString normalizeMacString(QString value) {
     return parts.join(QLatin1Char(':'));
 }
 
+QString normalizeResolvedName(QString value, const QString& ip) {
+    value = value.trimmed();
+    while (value.endsWith(QLatin1Char('.'))) {
+        value.chop(1);
+    }
+    if (value.isEmpty()
+        || value == QStringLiteral("?")
+        || value.compare(ip, Qt::CaseInsensitive) == 0) {
+        return {};
+    }
+    const QHostAddress asAddress(value);
+    if (asAddress.protocol() == QAbstractSocket::IPv4Protocol
+        && (ip.isEmpty() || asAddress.toString() == ip)) {
+        return {};
+    }
+    return value;
+}
+
+bool isUnknownVendorLabel(const QString& value) {
+    const QString normalized = value.trimmed().toLower();
+    return normalized.isEmpty()
+        || normalized == QStringLiteral("-")
+        || normalized == QStringLiteral("[n/a]")
+        || normalized == QStringLiteral("?")
+        || normalized == QStringLiteral("unknown vendor");
+}
+
+struct CachedResolvedName {
+    QString name;
+    QString mac;
+};
+
+QMutex& resolvedNameCacheMutex() {
+    static QMutex mutex;
+    return mutex;
+}
+
+QHash<QString, CachedResolvedName>& resolvedNameByIpCache() {
+    static QHash<QString, CachedResolvedName> cache;
+    return cache;
+}
+
+QHash<QString, QString>& resolvedNameByMacCache() {
+    static QHash<QString, QString> cache;
+    return cache;
+}
+
+void rememberResolvedName(const QString& ip, const QString& mac, const QString& name) {
+    const QString normalizedName = normalizeResolvedName(name, ip);
+    if (normalizedName.isEmpty()) {
+        return;
+    }
+    const QString normalizedMac = normalizeMacString(mac);
+    QMutexLocker locker(&resolvedNameCacheMutex());
+    if (!ip.trimmed().isEmpty()) {
+        resolvedNameByIpCache().insert(ip.trimmed(), CachedResolvedName{normalizedName, normalizedMac});
+    }
+    if (!normalizedMac.isEmpty() && normalizedMac != QStringLiteral("-")) {
+        resolvedNameByMacCache().insert(normalizedMac, normalizedName);
+    }
+}
+
+QString cachedResolvedName(const QString& ip, const QString& mac) {
+    const QString normalizedIp = ip.trimmed();
+    const QString normalizedMac = normalizeMacString(mac);
+    QString ipFallback;
+    QMutexLocker locker(&resolvedNameCacheMutex());
+
+    const auto byIp = resolvedNameByIpCache().constFind(normalizedIp);
+    if (byIp != resolvedNameByIpCache().constEnd()) {
+        const bool macCompatible = byIp->mac.isEmpty()
+            || normalizedMac.isEmpty()
+            || normalizedMac == QStringLiteral("-")
+            || byIp->mac == normalizedMac;
+        if (!isUnknownVendorLabel(byIp->name)) {
+            if (macCompatible) {
+                return byIp->name;
+            }
+            ipFallback = byIp->name;
+        }
+    }
+
+    if (!normalizedMac.isEmpty() && normalizedMac != QStringLiteral("-")) {
+        const auto byMac = resolvedNameByMacCache().constFind(normalizedMac);
+        if (byMac != resolvedNameByMacCache().constEnd() && !isUnknownVendorLabel(*byMac)) {
+            return *byMac;
+        }
+    }
+    return ipFallback;
+}
+
+QString extractResolvedNameFromPingOutput(const QString& output, const QString& ip) {
+#ifdef Q_OS_WIN
+    static const QRegularExpression headerRe(
+        QStringLiteral("^Pinging\\s+(.+?)\\s+\\[(\\d+\\.\\d+\\.\\d+\\.\\d+)\\]"),
+        QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption
+    );
+    const auto match = headerRe.match(output);
+    if (match.hasMatch() && match.captured(2) == ip) {
+        return normalizeResolvedName(match.captured(1), ip);
+    }
+#else
+    static const QRegularExpression headerRe(
+        QStringLiteral("^PING\\s+([^\\s]+)\\s+\\((\\d+\\.\\d+\\.\\d+\\.\\d+)\\)"),
+        QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption
+    );
+    const auto match = headerRe.match(output);
+    if (match.hasMatch() && match.captured(2) == ip) {
+        return normalizeResolvedName(match.captured(1), ip);
+    }
+#endif
+    return {};
+}
+
 QString routeDisplayForHost(const AdapterInfo& adapter, const ScanRecord& row) {
     if (row.onLink) {
         return adapter.id.isEmpty()
@@ -335,6 +452,227 @@ QString detectTypeHint(const QStringList& openPorts, bool pingSuccess, bool onLi
     return QStringLiteral("-");
 }
 
+bool containsValueInsensitive(const QStringList& values, const QString& expected) {
+    return std::any_of(values.begin(), values.end(), [&](const QString& value) {
+        return value.trimmed().compare(expected, Qt::CaseInsensitive) == 0;
+    });
+}
+
+QString mergePortDisplay(QString current, const QString& port) {
+    QStringList parts = current.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    QStringList normalized;
+    normalized.reserve(parts.size() + 1);
+    for (QString part : parts) {
+        part = part.trimmed();
+        if (part.isEmpty()
+            || part == QStringLiteral("-")
+            || part == QStringLiteral("[n/a]")
+            || containsValueInsensitive(normalized, part)) {
+            continue;
+        }
+        normalized.append(part);
+    }
+    if (!port.trimmed().isEmpty() && !containsValueInsensitive(normalized, port)) {
+        normalized.append(port.trimmed());
+    }
+    return normalized.isEmpty() ? QStringLiteral("-") : normalized.join(QLatin1Char(','));
+}
+
+QString vendorDisplayText(const QString& preferredName, const QString& mac, const VendorDbService* vendorDb) {
+    QString normalizedName = normalizeResolvedName(preferredName, QString());
+    if (isUnknownVendorLabel(normalizedName)) {
+        normalizedName.clear();
+    }
+    if (!normalizedName.isEmpty()) {
+        return normalizedName;
+    }
+    if (vendorDb == nullptr) {
+        return QStringLiteral("unknown vendor");
+    }
+    const QString vendor = vendorDb->lookupVendor(mac).trimmed();
+    return vendor.isEmpty() ? QStringLiteral("unknown vendor") : vendor;
+}
+
+QString runTimedCommandCapture(const QString& program, const QStringList& args, int timeoutMs, bool mergeStdErr = true) {
+    QProcess process;
+    process.setProcessChannelMode(mergeStdErr ? QProcess::MergedChannels : QProcess::SeparateChannels);
+    process.start(systemCommandPath(program), args);
+    if (!process.waitForStarted(qMin(timeoutMs, 1000))) {
+        return {};
+    }
+    if (!process.waitForFinished(timeoutMs)) {
+        process.terminate();
+        if (!process.waitForFinished(250)) {
+            process.kill();
+            process.waitForFinished(250);
+        }
+    }
+    return QString::fromUtf8(process.readAllStandardOutput());
+}
+
+QStringList parseDnsSdBrowseInstances(const QString& output, const QString& serviceType) {
+    QStringList instances;
+    const QRegularExpression lineRe(
+        QStringLiteral("^\\S+\\s+Add\\s+\\S+\\s+\\d+\\s+\\S+\\s+%1\\.\\s+(.+)$")
+            .arg(QRegularExpression::escape(serviceType)),
+        QRegularExpression::MultilineOption
+    );
+    auto matchIt = lineRe.globalMatch(output);
+    while (matchIt.hasNext()) {
+        const QString instance = matchIt.next().captured(1).trimmed();
+        if (!instance.isEmpty() && !instances.contains(instance)) {
+            instances.append(instance);
+        }
+    }
+    return instances;
+}
+
+QString parseDnsSdLookupTarget(const QString& output) {
+    static const QRegularExpression targetRe(QStringLiteral("can be reached at\\s+(\\S+)\\.:\\d+"));
+    const auto match = targetRe.match(output);
+    if (!match.hasMatch()) {
+        return {};
+    }
+    return match.captured(1).trimmed();
+}
+
+QStringList resolveMdnsIpv4(const QString& hostName) {
+    const QString output = runTimedCommandCapture(
+        QStringLiteral("dscacheutil"),
+        {QStringLiteral("-q"), QStringLiteral("host"), QStringLiteral("-a"), QStringLiteral("name"), hostName},
+        1500,
+        true
+    );
+    QStringList ips;
+    static const QRegularExpression ipRe(QStringLiteral("^ip_address:\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)$"), QRegularExpression::MultilineOption);
+    auto matchIt = ipRe.globalMatch(output);
+    while (matchIt.hasNext()) {
+        const QString ip = matchIt.next().captured(1).trimmed();
+        if (!ip.isEmpty() && !ips.contains(ip)) {
+            ips.append(ip);
+        }
+    }
+    return ips;
+}
+
+QString prettyBonjourName(const QString& serviceType, const QString& instanceName, const QString& targetHost) {
+    QString hostBase = targetHost.trimmed();
+    if (hostBase.endsWith(QStringLiteral(".local"), Qt::CaseInsensitive)) {
+        hostBase.chop(QStringLiteral(".local").size());
+    }
+
+    QString display = hostBase;
+    if (serviceType == QStringLiteral("_raop._tcp")) {
+        const int atIndex = instanceName.indexOf(QLatin1Char('@'));
+        if (atIndex >= 0 && atIndex + 1 < instanceName.size()) {
+            display = instanceName.mid(atIndex + 1).trimmed();
+        }
+    } else if (serviceType == QStringLiteral("_airplay._tcp")
+               || serviceType == QStringLiteral("_companion-link._tcp")) {
+        display = instanceName.trimmed();
+    } else if (serviceType == QStringLiteral("_apple-mobdev2._tcp")) {
+        if (display.isEmpty()) {
+            display = instanceName.trimmed();
+        }
+    }
+
+    display = display.trimmed();
+    if (display.contains(QStringLiteral("supportsRP-"), Qt::CaseInsensitive)) {
+        display = hostBase;
+    }
+    return normalizeResolvedName(display, QString());
+}
+
+QHash<QString, QString> collectBonjourNamesForService(const QSet<QString>& scannedIps, const QString& serviceType) {
+    QHash<QString, QString> resolved;
+    if (scannedIps.isEmpty()) {
+        return resolved;
+    }
+
+    const QString browseOutput = runTimedCommandCapture(
+        QStringLiteral("dns-sd"),
+        {QStringLiteral("-B"), serviceType, QStringLiteral("local")},
+        700,
+        true
+    );
+    const QStringList instances = parseDnsSdBrowseInstances(browseOutput, serviceType);
+    for (const auto& instance : instances) {
+        const QString lookupOutput = runTimedCommandCapture(
+            QStringLiteral("dns-sd"),
+            {QStringLiteral("-L"), instance, serviceType, QStringLiteral("local")},
+            800,
+            true
+        );
+        const QString targetHost = parseDnsSdLookupTarget(lookupOutput);
+        if (targetHost.isEmpty()) {
+            continue;
+        }
+        const QString displayName = prettyBonjourName(serviceType, instance, targetHost);
+        if (displayName.isEmpty()) {
+            continue;
+        }
+        const QStringList resolvedIps = resolveMdnsIpv4(targetHost);
+        for (const auto& ip : resolvedIps) {
+            if (!scannedIps.contains(ip) || resolved.contains(ip)) {
+                continue;
+            }
+            resolved.insert(ip, displayName);
+        }
+    }
+    return resolved;
+}
+
+QHash<QString, QString> collectBonjourNames(const QSet<QString>& scannedIps) {
+    QHash<QString, QString> resolved;
+    if (scannedIps.isEmpty()) {
+        return resolved;
+    }
+
+    const QStringList serviceTypes {
+        QStringLiteral("_apple-mobdev2._tcp"),
+        QStringLiteral("_airplay._tcp"),
+        QStringLiteral("_raop._tcp"),
+        QStringLiteral("_companion-link._tcp"),
+    };
+
+    QList<QFuture<QHash<QString, QString>>> futures;
+    futures.reserve(serviceTypes.size());
+    for (const auto& serviceType : serviceTypes) {
+        futures.append(QtConcurrent::run([scannedIps, serviceType]() {
+            return collectBonjourNamesForService(scannedIps, serviceType);
+        }));
+    }
+
+    for (auto& future : futures) {
+        future.waitForFinished();
+        const auto partial = future.result();
+        for (auto it = partial.constBegin(); it != partial.constEnd(); ++it) {
+            if (!resolved.contains(it.key())) {
+                resolved.insert(it.key(), it.value());
+            }
+        }
+    }
+    return resolved;
+}
+
+void warmArpCache(const QList<QString>& ips) {
+    if (ips.isEmpty()) {
+        return;
+    }
+
+    constexpr int kMaxWarmupIps = 2048;
+    const QByteArray payload(1, '\0');
+    QUdpSocket socket;
+
+    for (int index = 0; index < ips.size() && index < kMaxWarmupIps; ++index) {
+        const QHostAddress address(ips.at(index));
+        if (address.protocol() != QAbstractSocket::IPv4Protocol) {
+            continue;
+        }
+        socket.writeDatagram(payload, address, 9);
+    }
+}
+
 } // namespace
 
 NetworkScanService::NetworkScanService(VendorDbService* vendorDb, QObject* parent)
@@ -346,26 +684,57 @@ NetworkScanService::NetworkScanService(VendorDbService* vendorDb, QObject* paren
         const auto future = m_watcher->future();
         const auto postScanMacs = captureArpTable(m_activeAdapter.id);
         m_prefetchedMacs = postScanMacs.isEmpty() ? m_prefetchedMacs : postScanMacs;
+        const quint64 finishedGeneration = m_activeGeneration.load();
         records.reserve(future.resultCount());
         for (int index = 0; index < future.resultCount(); ++index) {
             auto record = future.resultAt(index);
-            if (!record.ip.isEmpty() && record.status != HostStatus::Offline) {
-                if ((record.mac.isEmpty() || record.mac == QStringLiteral("-"))) {
-                    const QString refreshedMac = postScanMacs.value(record.ip, QStringLiteral("-"));
-                    if (!refreshedMac.isEmpty() && refreshedMac != QStringLiteral("-")) {
-                        record.mac = refreshedMac;
-                    }
+            if (record.ip.isEmpty()) {
+                continue;
+            }
+            if (record.mac.isEmpty() || record.mac == QStringLiteral("-")) {
+                const QString refreshedMac = postScanMacs.value(record.ip, QStringLiteral("-"));
+                if (!refreshedMac.isEmpty() && refreshedMac != QStringLiteral("-")) {
+                    record.mac = refreshedMac;
                 }
+            }
+            if (record.status == HostStatus::Offline
+                && record.onLink
+                && !record.mac.isEmpty()
+                && record.mac != QStringLiteral("-")) {
+                record.status = HostStatus::Unknown;
+                record.typeHint = QStringLiteral("arp");
+                record.speed = QStringLiteral("link");
+                if (record.port.trimmed().isEmpty() || record.port == QStringLiteral("[n/a]")) {
+                    record.port = QStringLiteral("-");
+                }
+                if (record.portsDisplay.trimmed().isEmpty() || record.portsDisplay == QStringLiteral("[n/a]")) {
+                    record.portsDisplay = QStringLiteral("-");
+                }
+            }
+            if (record.status != HostStatus::Offline) {
                 record.gateway = record.gateway.trimmed().isEmpty() ? m_cachedGateway : record.gateway;
                 record.mask = record.mask.trimmed().isEmpty() ? m_cachedMask : record.mask;
-                if (m_vendorDb != nullptr) {
-                    record.vendor = m_vendorDb->lookupVendor(record.mac);
+                if (isUnknownVendorLabel(record.vendor)) {
+                    const QString cachedName = cachedResolvedName(record.ip, record.mac);
+                    if (!cachedName.isEmpty()) {
+                        record.vendor = cachedName;
+                    }
                 }
+                record.vendor = vendorDisplayText(record.vendor, record.mac, m_vendorDb);
+                record.name = routeDisplayForHost(m_activeAdapter, record);
                 records.append(record);
+            }
+        }
+        {
+            QMutexLocker locker(&m_liveRecordsMutex);
+            m_liveRecords.clear();
+            for (const auto& record : records) {
+                m_liveRecords.insert(record.ip, record);
             }
         }
         const int durationMs = static_cast<int>(QDateTime::currentMSecsSinceEpoch() - m_startedMs);
         emit scanFinished(records, durationMs);
+        startRtspEnrichment(records, finishedGeneration);
     });
 }
 
@@ -441,6 +810,10 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
     m_cancelRequested.store(false);
     m_startedMs = QDateTime::currentMSecsSinceEpoch();
     m_activeGeneration.store(generation);
+    {
+        QMutexLocker locker(&m_liveRecordsMutex);
+        m_liveRecords.clear();
+    }
     QThreadPool::globalInstance()->setMaxThreadCount(qBound(8, maxWorkers, 96));
     m_activeAdapter = adapterById(adapterId);
     const auto adapter = m_activeAdapter;
@@ -448,8 +821,123 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
     m_cachedGateway = detectGateway(adapter);
     m_cachedMask = detectMask(adapter);
     m_prefetchedMacs = captureArpTable(adapter.id);
-    m_prefetchedPingDisplay.clear();
+    {
+        QMutexLocker locker(&m_prefetchedPingMutex);
+        m_prefetchedPingDisplay.clear();
+    }
     const auto scheduledIps = prioritizeIpsForScan(ips, m_prefetchedMacs, m_cachedGateway);
+
+    QList<QString> immediateProbeIps;
+    immediateProbeIps.reserve(3);
+    for (const auto& ip : scheduledIps) {
+        if (immediateProbeIps.size() >= 3) {
+            break;
+        }
+        const QString mac = m_prefetchedMacs.value(ip, QStringLiteral("-"));
+        if (!mac.isEmpty() && mac != QStringLiteral("-")) {
+            immediateProbeIps.append(ip);
+        }
+    }
+    for (const auto& ip : scheduledIps) {
+        if (immediateProbeIps.size() >= 3) {
+            break;
+        }
+        if (!immediateProbeIps.contains(ip)) {
+            immediateProbeIps.append(ip);
+        }
+    }
+
+    QList<QString> onLinkIps;
+    onLinkIps.reserve(scheduledIps.size());
+    for (const auto& ip : scheduledIps) {
+        if (isOnLink(ip, adapter) && ip != adapter.ip) {
+            onLinkIps.append(ip);
+        }
+    }
+    if (!onLinkIps.isEmpty()) {
+        (void)QtConcurrent::run([onLinkIps]() {
+            warmArpCache(onLinkIps);
+        });
+    }
+#ifdef Q_OS_MACOS
+    startBonjourEnrichment(scheduledIps, generation);
+#endif
+
+    const auto launchPrioritizedProbe = [this, adapter, generation](const QString& ip, int delayMs) {
+        QTimer::singleShot(delayMs, this, [this, adapter, generation, ip]() {
+            if (m_cancelRequested.load() || generation != m_activeGeneration.load()) {
+                return;
+            }
+
+            (void)QtConcurrent::run([this, adapter, generation, ip]() {
+                if (m_cancelRequested.load() || generation != m_activeGeneration.load()) {
+                    return;
+                }
+                auto record = probeHost(ip, adapter);
+                if (m_cancelRequested.load()
+                    || record.ip.isEmpty()
+                    || record.status == HostStatus::Offline
+                    || record.generation != m_activeGeneration.load()) {
+                    return;
+                }
+                QMetaObject::invokeMethod(this, [this, record]() {
+                    if (m_cancelRequested.load() || record.generation != m_activeGeneration.load()) {
+                        return;
+                    }
+                    {
+                        QMutexLocker locker(&m_liveRecordsMutex);
+                        m_liveRecords.insert(record.ip, record);
+                    }
+                    emit recordReady(record);
+                }, Qt::QueuedConnection);
+            });
+        });
+    };
+
+    for (int index = 0; index < immediateProbeIps.size(); ++index) {
+        launchPrioritizedProbe(immediateProbeIps.at(index), index * 40);
+    }
+
+    const QSet<QString> immediateProbeSet(immediateProbeIps.constBegin(), immediateProbeIps.constEnd());
+    (void)QtConcurrent::run([this, adapter, generation, startIp, endIp, scheduledIps, immediateProbeSet, launchPrioritizedProbe]() {
+        const auto prefetchedPing = sweepPingRange(startIp, endIp, adapter);
+        if (prefetchedPing.isEmpty()) {
+            return;
+        }
+
+        QMetaObject::invokeMethod(this, [this, adapter, generation, scheduledIps, immediateProbeSet, prefetchedPing, launchPrioritizedProbe]() {
+            if (m_cancelRequested.load() || generation != m_activeGeneration.load()) {
+                return;
+            }
+
+            {
+                QMutexLocker locker(&m_prefetchedPingMutex);
+                for (auto it = prefetchedPing.constBegin(); it != prefetchedPing.constEnd(); ++it) {
+                    m_prefetchedPingDisplay.insert(it.key(), it.value());
+                }
+            }
+
+            int launchIndex = 0;
+            for (const auto& ip : scheduledIps) {
+                if (launchIndex >= 6) {
+                    break;
+                }
+                if (!prefetchedPing.contains(ip) || immediateProbeSet.contains(ip)) {
+                    continue;
+                }
+                bool alreadyVisible = false;
+                {
+                    QMutexLocker locker(&m_liveRecordsMutex);
+                    alreadyVisible = m_liveRecords.contains(ip);
+                }
+                if (alreadyVisible) {
+                    continue;
+                }
+                launchPrioritizedProbe(ip, launchIndex * 32);
+                ++launchIndex;
+            }
+        }, Qt::QueuedConnection);
+    });
 
     auto future = QtConcurrent::mapped(scheduledIps, [this, adapter](const QString& ip) {
         if (m_cancelRequested.load()) {
@@ -462,6 +950,10 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
             && record.generation == m_activeGeneration.load()) {
             QMetaObject::invokeMethod(this, [this, record]() {
                 if (!m_cancelRequested.load() && record.generation == m_activeGeneration.load()) {
+                    {
+                        QMutexLocker locker(&m_liveRecordsMutex);
+                        m_liveRecords.insert(record.ip, record);
+                    }
                     emit recordReady(record);
                 }
             }, Qt::QueuedConnection);
@@ -473,10 +965,121 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
 
 void NetworkScanService::cancel() {
     m_cancelRequested.store(true);
+    QMutexLocker locker(&m_liveRecordsMutex);
+    m_liveRecords.clear();
 }
 
 bool NetworkScanService::isRunning() const {
     return m_watcher->isRunning();
+}
+
+void NetworkScanService::startBonjourEnrichment(const QList<QString>& ips, quint64 generation) {
+#ifndef Q_OS_MACOS
+    Q_UNUSED(ips)
+    Q_UNUSED(generation)
+    return;
+#else
+    QSet<QString> scannedIps;
+    for (const auto& ip : ips) {
+        if (!ip.trimmed().isEmpty()) {
+            scannedIps.insert(ip.trimmed());
+        }
+    }
+    if (scannedIps.isEmpty()) {
+        return;
+    }
+
+    QPointer<NetworkScanService> guard(this);
+    (void)QtConcurrent::run([guard, generation, scannedIps]() {
+        const auto bonjourNames = collectBonjourNames(scannedIps);
+        if (!guard || bonjourNames.isEmpty()) {
+            return;
+        }
+        QMetaObject::invokeMethod(guard.data(), [guard, generation, bonjourNames]() {
+            if (!guard || guard->m_activeGeneration.load() != generation) {
+                return;
+            }
+            for (auto it = bonjourNames.constBegin(); it != bonjourNames.constEnd(); ++it) {
+                rememberResolvedName(it.key(), QString(), it.value());
+                ScanRecord updated;
+                bool shouldEmit = false;
+                {
+                    QMutexLocker locker(&guard->m_liveRecordsMutex);
+                    const auto liveIt = guard->m_liveRecords.constFind(it.key());
+                    if (liveIt != guard->m_liveRecords.constEnd()) {
+                        updated = liveIt.value();
+                        updated.hostName = it.value();
+                        updated.vendor = it.value();
+                        guard->m_liveRecords.insert(it.key(), updated);
+                        shouldEmit = true;
+                    }
+                }
+                if (shouldEmit) {
+                    emit guard->recordReady(updated);
+                }
+            }
+        }, Qt::QueuedConnection);
+    });
+#endif
+}
+
+void NetworkScanService::startRtspEnrichment(const QList<ScanRecord>& records, quint64 generation) {
+    QList<ScanRecord> candidates;
+    candidates.reserve(records.size());
+
+    for (const auto& record : records) {
+        if (record.ip.trimmed().isEmpty() || record.status == HostStatus::Offline) {
+            continue;
+        }
+        const QString rtspUrl = QStringLiteral("rtsp://%1:554").arg(record.ip);
+        if (record.webDetect.contains(rtspUrl, Qt::CaseInsensitive)) {
+            continue;
+        }
+        candidates.append(record);
+    }
+
+    if (candidates.isEmpty()) {
+        return;
+    }
+
+    QPointer<NetworkScanService> guard(this);
+    (void)QtConcurrent::run([guard, generation, candidates]() {
+        QList<ScanRecord> updates;
+        updates.reserve(candidates.size());
+
+        for (const auto& record : candidates) {
+            if (!guard || guard->m_activeGeneration.load() != generation) {
+                return;
+            }
+            if (!tryConnectPort(record.ip, 554, 110)) {
+                continue;
+            }
+
+            auto updated = record;
+            updated.webDetect = QStringLiteral("rtsp://%1:554").arg(updated.ip);
+            updated.portsDisplay = mergePortDisplay(updated.portsDisplay, QStringLiteral("554"));
+            updated.port = mergePortDisplay(updated.port, QStringLiteral("554"));
+            if (updated.typeHint.trimmed().isEmpty()
+                || updated.typeHint == QStringLiteral("-")
+                || updated.typeHint == QStringLiteral("[n/a]")) {
+                updated.typeHint = QStringLiteral("rtsp");
+            }
+            updates.append(updated);
+        }
+
+        if (!guard || updates.isEmpty()) {
+            return;
+        }
+
+        QMetaObject::invokeMethod(guard.data(), [guard, generation, updates]() {
+            if (!guard || guard->m_activeGeneration.load() != generation) {
+                return;
+            }
+            for (const auto& updated : updates) {
+                emit guard->recordReady(updated);
+            }
+        }, Qt::QueuedConnection);
+    });
 }
 
 AdapterInfo NetworkScanService::adapterById(const QString& adapterId) const {
@@ -505,12 +1108,21 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
     row.speed = QStringLiteral("[n/a]");
 
     PingResult ping;
-    const auto prefetchedPing = m_prefetchedPingDisplay.constFind(ip);
-    if (prefetchedPing != m_prefetchedPingDisplay.constEnd()) {
+    QString resolvedName;
+    QString prefetchedPingDisplay;
+    {
+        QMutexLocker locker(&m_prefetchedPingMutex);
+        const auto prefetchedPing = m_prefetchedPingDisplay.constFind(ip);
+        if (prefetchedPing != m_prefetchedPingDisplay.constEnd()) {
+            prefetchedPingDisplay = prefetchedPing.value();
+        }
+    }
+    if (!prefetchedPingDisplay.isEmpty()) {
         ping.success = true;
-        ping.display = prefetchedPing.value();
+        ping.display = prefetchedPingDisplay;
     } else {
         ping = pingHost(ip, adapter.ip);
+        resolvedName = ping.resolvedName;
     }
     row.pingDisplay = ping.display.isEmpty() ? QStringLiteral("[n/a]") : ping.display;
     row.mac = m_prefetchedMacs.value(ip, QStringLiteral("-"));
@@ -521,6 +1133,9 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
         ping = retryPingHost(ip, adapter.ip, 3000, 220);
         if (ping.success) {
             row.pingDisplay = ping.display;
+        }
+        if (resolvedName.isEmpty()) {
+            resolvedName = ping.resolvedName;
         }
     }
 
@@ -535,6 +1150,9 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
             if (ping.success) {
                 row.pingDisplay = ping.display;
             }
+            if (resolvedName.isEmpty()) {
+                resolvedName = ping.resolvedName;
+            }
         }
     }
 
@@ -548,6 +1166,7 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
         row.status = HostStatus::Offline;
     }
 
+    row.vendor = resolvedName;
     if (row.status == HostStatus::Offline || m_cancelRequested.load()) {
         return row;
     }
@@ -564,7 +1183,15 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
         row.port = QStringLiteral("-");
     }
 
-    row.vendor = m_vendorDb != nullptr ? m_vendorDb->lookupVendor(row.mac) : QStringLiteral("unknown vendor");
+    QString bestResolvedName = resolvedName;
+    if (bestResolvedName.isEmpty()) {
+        bestResolvedName = cachedResolvedName(row.ip, row.mac);
+    }
+    if (!bestResolvedName.isEmpty()) {
+        rememberResolvedName(row.ip, row.mac, bestResolvedName);
+    }
+    row.hostName = bestResolvedName;
+    row.vendor = vendorDisplayText(bestResolvedName, row.mac, m_vendorDb);
     row.name = routeDisplayForHost(adapter, row);
     row.webDetect = detectWebService(ip, openPorts);
     row.typeHint = detectTypeHint(openPorts, ping.success, row.onLink);
@@ -573,15 +1200,22 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
 }
 
 NetworkScanService::PingResult NetworkScanService::retryPingHost(const QString& ip, const QString& sourceIp, int windowMs, int intervalMs) {
+    PingResult best;
     const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + qMax(500, windowMs);
     while (QDateTime::currentMSecsSinceEpoch() < deadline) {
-        const auto ping = pingHost(ip, sourceIp);
+        auto ping = pingHost(ip, sourceIp);
+        if (best.resolvedName.isEmpty()) {
+            best.resolvedName = ping.resolvedName;
+        }
         if (ping.success && !ping.display.trimmed().isEmpty()) {
+            if (ping.resolvedName.isEmpty()) {
+                ping.resolvedName = best.resolvedName;
+            }
             return ping;
         }
         QThread::msleep(static_cast<unsigned long>(qMax(80, intervalMs)));
     }
-    return {};
+    return best;
 }
 
 bool NetworkScanService::isVpnName(const QString& name) {
@@ -629,6 +1263,9 @@ NetworkScanService::PingResult NetworkScanService::pingHost(const QString& ip, c
     const QString output = runCommandCapture(QStringLiteral("ping"), args, true, &exitStatus);
 #elif defined(Q_OS_MACOS)
     args << QStringLiteral("-c") << QStringLiteral("1") << QStringLiteral("-W") << QStringLiteral("350");
+    if (!sourceIp.isEmpty()) {
+        args << QStringLiteral("-S") << sourceIp;
+    }
     args << ip;
     const QString output = runCommandCapture(QStringLiteral("ping"), args, true, &exitStatus);
 #else
@@ -639,6 +1276,7 @@ NetworkScanService::PingResult NetworkScanService::pingHost(const QString& ip, c
     args << ip;
     const QString output = runCommandCapture(QStringLiteral("ping"), args, true, &exitStatus);
 #endif
+    result.resolvedName = extractResolvedNameFromPingOutput(output, ip);
 
     static const QRegularExpression timeRe(QStringLiteral("time[=<]([0-9]+(?:\\.[0-9]+)?)\\s*ms"),
                                            QRegularExpression::CaseInsensitiveOption);
@@ -652,7 +1290,7 @@ NetworkScanService::PingResult NetworkScanService::pingHost(const QString& ip, c
 
     result.success = (exitStatus == 0);
     if (result.success) {
-        result.display = QStringLiteral("ok");
+        result.display = QStringLiteral("online");
     }
     return result;
 }
@@ -738,9 +1376,15 @@ QStringList NetworkScanService::probeOpenPorts(const QString& ip) {
 }
 
 QString NetworkScanService::detectWebService(const QString& ip, const QStringList& openPorts) {
-    Q_UNUSED(ip)
-    if (openPorts.contains(QStringLiteral("80"))) return QStringLiteral("HTTP");
-    if (openPorts.contains(QStringLiteral("443"))) return QStringLiteral("HTTPS");
+    if (containsValueInsensitive(openPorts, QStringLiteral("554"))) {
+        return QStringLiteral("rtsp://%1:554").arg(ip);
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("443"))) {
+        return QStringLiteral("https://%1").arg(ip);
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("80"))) {
+        return QStringLiteral("http://%1").arg(ip);
+    }
     return QStringLiteral("[n/a]");
 }
 

@@ -7,6 +7,7 @@
 #include <atomic>
 #include <QFutureWatcher>
 #include <QHash>
+#include <QMutex>
 #include <QObject>
 
 namespace nt {
@@ -37,6 +38,7 @@ private:
     struct PingResult {
         bool success {false};
         QString display;
+        QString resolvedName;
     };
 
     ScanRecord probeHost(const QString& ip, const AdapterInfo& adapter);
@@ -55,6 +57,8 @@ private:
     static QString detectGateway(const AdapterInfo& adapter);
     static QString detectMask(const AdapterInfo& adapter);
     static bool isOnLink(const QString& ip, const AdapterInfo& adapter);
+    void startBonjourEnrichment(const QList<QString>& ips, quint64 generation);
+    void startRtspEnrichment(const QList<ScanRecord>& records, quint64 generation);
     AdapterInfo adapterById(const QString& adapterId) const;
 
     VendorDbService* m_vendorDb {nullptr};
@@ -65,8 +69,11 @@ private:
     AdapterInfo m_activeAdapter;
     QString m_cachedGateway;
     QString m_cachedMask;
+    mutable QMutex m_prefetchedPingMutex;
     QHash<QString, QString> m_prefetchedPingDisplay;
     QHash<QString, QString> m_prefetchedMacs;
+    mutable QMutex m_liveRecordsMutex;
+    QHash<QString, ScanRecord> m_liveRecords;
 };
 
 } // namespace nt

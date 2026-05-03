@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(NetworkToolsQt VERSION 1.0.0 LANGUAGES CXX)
+project(NetworkToolsQt VERSION 1.0.5 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -72,8 +72,8 @@ if(APPLE)
         MACOSX_BUNDLE_GUI_IDENTIFIER "local.networktools.qt"
         MACOSX_BUNDLE_BUNDLE_NAME "Network Tools"
         MACOSX_BUNDLE_ICON_FILE "app.icns"
-        MACOSX_BUNDLE_BUNDLE_VERSION "1.0"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1.0.5"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.5"
     )
 endif()
 
