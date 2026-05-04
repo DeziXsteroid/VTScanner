@@ -1,4 +1,4 @@
-# Network Tools 1.0.8
+# Network Tools 1.0.5
 
 Native Qt/C++ network utility with a production desktop runtime, compact scan workspace, transport consoles and installer-seeded vendor database.
 
@@ -54,7 +54,7 @@ Run from build output:
 On macOS, if a bundle is produced:
 
 ```bash
-open "/Applications/Network Tools 1.0.8.app"
+open "/Applications/Network Tools 1.0.5.app"
 ```
 
 ## Installers and packaging
@@ -63,7 +63,7 @@ macOS installer build on this machine:
 
 ```bash
 bash cpp/scripts/build_macos_installer.sh
-open "cpp/dist/installers/Network-Tools-1.0.8-macos-installer.dmg"
+open "cpp/dist/installers/Network-Tools-1.0.5-macos-installer.dmg"
 ```
 
 macOS direct package and local install:
@@ -94,22 +94,22 @@ bash cpp/scripts/build_linux_installer.sh
 Linux bootstrap run on a Linux target:
 
 ```bash
-chmod +x Network-Tools-1.0.8-linux-bootstrap.run
-./Network-Tools-1.0.8-linux-bootstrap.run
+chmod +x Network-Tools-1.0.5-linux-bootstrap.run
+./Network-Tools-1.0.5-linux-bootstrap.run
 ```
 
 Installer artifacts currently produced by the project:
 
-- macOS installer app: `cpp/dist/installers/Install Network Tools 1.0.8.app`
-- macOS installer DMG: `cpp/dist/installers/Network-Tools-1.0.8-macos-installer.dmg`
-- Linux bootstrap installer: `cpp/dist/installers/Network-Tools-1.0.8-linux-bootstrap.run`
+- macOS installer app: `cpp/dist/installers/Install Network Tools 1.0.5.app`
+- macOS installer DMG: `cpp/dist/installers/Network-Tools-1.0.5-macos-installer.dmg`
+- Linux bootstrap installer: `cpp/dist/installers/Network-Tools-1.0.5-linux-bootstrap.run`
 - macOS deploy bundle: `cpp/dist/Network Tools.app`
 - macOS deploy zip: `cpp/dist/Network-Tools-macos.zip`
 
 Windows output after a successful Windows build:
 
 - staging folder: `cpp\dist\NetworkToolsQt`
-- final setup: `cpp\dist\installers\Network-Tools-1.0.8-Setup-win64.exe`
+- final setup: `cpp\dist\installers\Network-Tools-1.0.5-Setup-win64.exe`
 
 ## Vendor DB behavior
 

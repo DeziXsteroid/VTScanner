@@ -46,7 +46,7 @@ Run:
 macOS bundle:
 
 ```bash
-open "/Applications/Network Tools 1.0.8.app"
+open "/Applications/Network Tools 1.0.5.app"
 ```
 
 ## Packaging scripts

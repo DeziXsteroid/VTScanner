@@ -1,5 +1,5 @@
-#define AppName "Network Tools 1.0.8"
-#define AppVersion "1.0.8"
+#define AppName "Network Tools 1.0.5"
+#define AppVersion "1.0.5"
 #define AppPublisher "Network Tools"
 #define AppExeName "NetworkToolsQt.exe"
 #define DistDir "..\\..\\dist\\NetworkToolsQt"
@@ -13,7 +13,7 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=..\..\dist\installers
-OutputBaseFilename=Network-Tools-1.0.8-Setup-win64
+OutputBaseFilename=Network-Tools-1.0.5-Setup-win64
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
