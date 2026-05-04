@@ -324,8 +324,8 @@ void mergeHelpfulScanFields(ScanRecord& target, const ScanRecord& source) {
 bool hasUsefulSeedSignal(const ScanRecord& record) {
     return record.status == HostStatus::Online
         || !isMissingPingDisplay(record.pingDisplay)
-        || !isUnknownVendorLabel(record.hostName)
-        || !isUnknownVendorLabel(record.vendor);
+        || !isUnknownVendorLabel(record.portsDisplay)
+        || !isUnknownVendorLabel(record.webDetect);
 }
 
 bool needsNameEnrichment(const ScanRecord& record) {
@@ -1578,20 +1578,6 @@ NetworkScanService::NetworkScanService(VendorDbService* vendorDb, QObject* paren
                     record.mac = refreshedMac;
                 }
             }
-            if (record.status == HostStatus::Offline
-                && record.onLink
-                && !record.mac.isEmpty()
-                && record.mac != QStringLiteral("-")) {
-                record.status = HostStatus::Unknown;
-                record.typeHint = QStringLiteral("arp");
-                record.speed = QStringLiteral("link");
-                if (record.port.trimmed().isEmpty() || record.port == QStringLiteral("[n/a]")) {
-                    record.port = QStringLiteral("-");
-                }
-                if (record.portsDisplay.trimmed().isEmpty() || record.portsDisplay == QStringLiteral("[n/a]")) {
-                    record.portsDisplay = QStringLiteral("-");
-                }
-            }
             if (record.status != HostStatus::Offline) {
                 const QString currentGateway = cachedGateway();
                 if (record.gateway.trimmed().isEmpty()
@@ -1883,9 +1869,6 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                     seed.typeHint = QStringLiteral("icmp");
                 }
             }
-            if (!hasUsefulSeedSignal(seed)) {
-                return;
-            }
             if (m_cancelRequested.load() || generation != m_activeGeneration.load()) {
                 return;
             }
@@ -1907,6 +1890,9 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                     m_liveRecords.insert(seed.ip, merged);
                     seed = merged;
                 } else {
+                    if (!hasUsefulSeedSignal(seed)) {
+                        return;
+                    }
                     m_liveRecords.insert(seed.ip, seed);
                 }
             }
@@ -2076,7 +2062,9 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                     }
                 }
 
-                if (!canShowInitial && record.status != HostStatus::Offline) {
+                if (!canShowInitial
+                    && record.status != HostStatus::Offline
+                    && (ping.success || !openPorts.isEmpty())) {
                     enriched = true;
                 }
                 if (enriched && !m_cancelRequested.load() && generation == m_activeGeneration.load()) {
@@ -2878,8 +2866,6 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
 
     if (ping.success) {
         row.status = HostStatus::Online;
-    } else if (row.onLink && !row.mac.isEmpty() && row.mac != QStringLiteral("-")) {
-        row.status = HostStatus::Unknown;
     } else if (!openPorts.isEmpty()) {
         row.status = HostStatus::Unknown;
     } else {
@@ -2904,8 +2890,7 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
     }
 
     const bool hasReachabilitySignal = ping.success
-        || !openPorts.isEmpty()
-        || (row.onLink && !row.mac.isEmpty() && row.mac != QStringLiteral("-"));
+        || !openPorts.isEmpty();
     if (resolvedName.isEmpty() && hasReachabilitySignal) {
         resolvedName = reverseLookupName(ip);
     }
