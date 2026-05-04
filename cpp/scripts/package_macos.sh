@@ -198,12 +198,16 @@ rm -rf "$APP_PATH/Contents/MacOS/data"
 mkdir -p "$SEED_DIR"
 curl -L --fail --silent --show-error "$MANUF_URL" -o "$SEED_PATH"
 mkdir -p "$BIN_DIR"
-FPING_SOURCE="$(find_optional_tool fping "$FPING_SOURCE" || true)"
+if [[ "${NETWORKTOOLS_BUNDLE_FPING:-0}" == "1" ]]; then
+  FPING_SOURCE="$(find_optional_tool fping "$FPING_SOURCE" || true)"
+else
+  FPING_SOURCE=""
+fi
 if [[ -n "$FPING_SOURCE" && -f "$FPING_SOURCE" ]]; then
   cp -f "$FPING_SOURCE" "$BIN_DIR/fping"
   chmod 755 "$BIN_DIR/fping"
 else
-  echo "Optional fping was not found; packaged app will use system ping fallback." >&2
+  echo "Optional fping was not bundled; packaged app will use system fping when available or ping fallback." >&2
 fi
 
 codesign --force --deep --sign - --timestamp=none "$APP_PATH"

@@ -181,8 +181,8 @@ Expected packaging behavior:
 
 - `macdeployqt` bundles required Qt frameworks into `Contents/Frameworks`
 - bundled resources include vendor DB seed
-- bundled resources may include helper binaries such as `fping`
-- if optional helpers are not available on the build machine, packaged app must still work through system `ping`/DNS fallbacks
+- bundled resources may include helper binaries, but privileged/raw-socket helpers such as `fping` should remain system tools unless deliberately opted in for a signed build
+- if optional helpers are not available on the target machine, packaged app must still work through system `ping`/DNS fallbacks
 - bundle must include local-network and Bonjour privacy metadata in `Info.plist`
 
 Required bundle privacy keys:
