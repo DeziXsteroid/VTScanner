@@ -75,7 +75,7 @@ QStringList SshProcessSession::buildCommand(const SessionProfile& profile, QStri
         if (!sshpass.isEmpty()) {
             *program = sshpass;
             return {
-                QStringLiteral("-p"), profile.password,
+                QStringLiteral("-e"),
                 QStringLiteral("ssh"),
                 QStringLiteral("-tt"),
                 QStringLiteral("-o"), QStringLiteral("PreferredAuthentications=password,keyboard-interactive"),
@@ -144,10 +144,16 @@ void SshProcessSession::open(const SessionProfile& profile) {
         return;
     }
     auto environment = QProcessEnvironment::systemEnvironment();
-    if (QFileInfo(program).fileName() == QStringLiteral("expect") && !profile.password.isEmpty()) {
+    const QString programName = QFileInfo(program).fileName();
+    if (programName == QStringLiteral("expect") && !profile.password.isEmpty()) {
         environment.insert(QStringLiteral("NETWORKTOOLS_SSH_PASSWORD"), profile.password);
+        environment.remove(QStringLiteral("SSHPASS"));
+    } else if (programName == QStringLiteral("sshpass") && !profile.password.isEmpty()) {
+        environment.insert(QStringLiteral("SSHPASS"), profile.password);
+        environment.remove(QStringLiteral("NETWORKTOOLS_SSH_PASSWORD"));
     } else {
         environment.remove(QStringLiteral("NETWORKTOOLS_SSH_PASSWORD"));
+        environment.remove(QStringLiteral("SSHPASS"));
     }
     m_process->setProcessEnvironment(environment);
     m_process->start(program, arguments);

@@ -1,19 +1,32 @@
 # Native Qt/C++ Port Spec
 
+This file is the formal contract for build/runtime/packaging expectations of the native desktop port.
+
 ## Goal
 
-Ship a serious desktop release that no longer looks or behaves like a Python prototype:
+Ship a serious desktop release that no longer behaves like a Python prototype:
 
-- native Qt/C++ runtime;
-- compact dark Russian UI;
-- production-first scan workspace;
-- SSH/Telnet profiles;
-- installer-seeded vendor database;
-- deployable macOS and Windows builds.
+- native Qt/C++ runtime
+- compact dark Russian-first UI
+- production-oriented scan workspace
+- SSH/Telnet session pages
+- transport consoles for Serial/TCP/UDP
+- HTTP request page
+- SNMP browser
+- installer-seeded vendor database
+- deployable macOS and Windows outputs
+- Linux bootstrap installer flow
 
-## Required runtime modules
+## Source of Truth
 
-Qt modules:
+For version and entry-point questions, trust code first:
+
+- `CMakeLists.txt`
+- `src/main.cpp`
+
+Do not assume documentation filenames or installer labels are always fully normalized.
+
+## Required Compile-Time Qt Modules
 
 - `Qt6Core`
 - `Qt6Gui`
@@ -22,7 +35,168 @@ Qt modules:
 - `Qt6Concurrent`
 - `Qt6SerialPort`
 
-Windows runtime files expected from `windeployqt`:
+## Expected Native Runtime Areas
+
+### Core
+
+- `src/core/AppPaths.*`
+  runtime paths in app data / application support
+- `src/core/SettingsService.*`
+  JSON settings, worker count, page state, profiles, quick commands
+- `src/core/VendorDbService.*`
+  `manuf` seed/load/update/lookup
+- `src/core/SnapshotService.*`
+  scan baseline save/list/load/diff
+- `src/core/TerminalSanitizer.*`
+  output sanitization for console-style pages
+
+### Network / runtime
+
+- `src/network/NetworkScanService.*`
+- `src/network/HttpRequestService.*`
+- `src/network/SerialSession.*`
+- `src/network/TcpClientSession.*`
+- `src/network/UdpSocketSession.*`
+- `src/network/TelnetSession.*`
+- `src/network/SshProcessSession.*`
+
+### Widget support
+
+- `src/widgets/CodeEditor.*`
+
+## Scan UI Contract
+
+The scan page is compact and operational, not dashboard-like.
+
+### Controls
+
+Visible top-area behavior should support:
+
+- IP range input
+- adapter selection
+- auto-IP calculation
+- auto-scan timer mode
+- prefix mask selection
+- start/stop action
+- column visibility controls
+- sort order toggle
+
+### Table columns
+
+The current runtime table model contains these columns:
+
+- `IP`
+- `Ping`
+- `MAC`
+- `Vendor`
+- `Hostname`
+- `Web`
+- `Gateway`
+- `Port`
+- `Type`
+
+Some columns may be hidden by default, but they still exist in the model and must stay index-stable unless the UI code is updated carefully.
+
+### Behavioral rules
+
+- only active/detected hosts should remain in the visible grid
+- rows can be updated incrementally by later enrichment
+- scan comparison mode can mark newly appeared hosts
+- on macOS, ARP parsing must normalize both one-digit and two-digit hex octets before vendor lookup
+
+## Vendor / Identity Contract
+
+The `Vendor` field is not a strict manufacturer-only field.
+
+Expected priority:
+
+1. resolved device identity from DNS / Bonjour / cached enrichment
+2. manufacturer lookup from `manuf`
+
+This is intentional and must be preserved unless product behavior is explicitly changed.
+
+## External Tool Contract
+
+### SSH
+
+The SSH page is native UI, but the transport still depends on an OS-side SSH client.
+
+macOS/Linux:
+
+- `ssh`
+- optionally `sshpass`
+- optionally `expect`
+
+Windows:
+
+- `ssh.exe`
+- or `plink.exe`
+
+### SNMP
+
+The SNMP browser depends on:
+
+- `snmpwalk`
+- `snmpset`
+- optional `snmptranslate` for richer OID descriptions
+
+If these tools are missing, the app must show a clear install hint instead of failing silently.
+
+### Scan helpers
+
+Depending on platform, the scan engine may use:
+
+- `ping`
+- `arp`
+- `netstat`
+- `dns-sd`
+- `dscacheutil`
+- `fping`
+
+The scanner must gracefully fall back to slower native/system paths when optional helpers such as `fping`, `dig`, `host`, or `nslookup` are missing.
+
+## Vendor DB Seeding Contract
+
+The installer or bootstrap path must seed `manuf` before first launch whenever possible.
+
+Primary runtime targets:
+
+- Windows: `%APPDATA%\NetWorkTools\data\manuf`
+- macOS: `~/Library/Application Support/NetWorkTools/data/manuf`
+- Linux: `~/.local/share/NetWorkTools/data/manuf`
+
+Seeding order:
+
+1. bundled seed inside the packaged app if present
+2. download from Wireshark during install/bootstrap if missing
+3. only then fall back to runtime recovery by the app
+
+## macOS Packaging Contract
+
+Direct deploy artifact:
+
+- `cpp/dist/Network Tools.app`
+
+Expected packaging behavior:
+
+- `macdeployqt` bundles required Qt frameworks into `Contents/Frameworks`
+- bundled resources include vendor DB seed
+- bundled resources may include helper binaries such as `fping`
+- if optional helpers are not available on the build machine, packaged app must still work through system `ping`/DNS fallbacks
+- bundle must include local-network and Bonjour privacy metadata in `Info.plist`
+
+Required bundle privacy keys:
+
+- `NSBonjourServices`
+- `NSLocalNetworkUsageDescription`
+
+Why this matters:
+
+- packaged builds on Apple networks may fail to enrich device names correctly without these keys and user approval for local-network access
+
+## Windows Packaging Contract
+
+Expected `windeployqt`-driven runtime contents:
 
 - `Qt6Core.dll`
 - `Qt6Gui.dll`
@@ -31,97 +205,30 @@ Windows runtime files expected from `windeployqt`:
 - `Qt6Concurrent.dll`
 - `Qt6SerialPort.dll`
 - platform plugin `platforms/qwindows.dll`
-- style/image plugins required by Qt deployment
-- compiler runtime from `windeployqt --compiler-runtime`
+- image/style plugins as required by deployment
+- compiler runtime via `windeployqt --compiler-runtime`
 
-macOS runtime:
-
-- bundled `.app` with `macdeployqt`
-- Qt frameworks copied inside `Contents/Frameworks`
-- vendor seed placed into `Contents/MacOS/data/manuf`
-
-## Native service map
-
-- `src/core/AppPaths.*`
-  runtime paths in AppData/Application Support.
-- `src/core/SettingsService.*`
-  JSON settings, window state, workers, session profiles.
-- `src/core/VendorDbService.*`
-  `manuf` seed/load/update/lookup.
-- `src/core/SnapshotService.*`
-  save/list/load/diff baseline snapshots.
-- `src/core/TerminalSanitizer.*`
-  preserves terminal control sequences required for SSH/Telnet rendering while filtering unsafe noise.
-- `src/network/NetworkScanService.*`
-  adapters, auto range, host probing, MAC/vendor enrichment, route and open-port summary.
-- `src/network/HttpRequestService.*`
-  native HTTP requests.
-- `src/network/TelnetSession.*`
-  native Telnet session over `QTcpSocket`.
-- `src/network/SshProcessSession.*`
-  native C++ wrapper around system SSH client with sanitized terminal output.
-
-## Installer behavior
-
-The installer must seed `manuf` before first launch.
-
-Primary target path:
-
-- Windows: `%APPDATA%\NetWorkTools\data\manuf`
-- macOS: `~/Library/Application Support/NetWorkTools/data/manuf`
-
-Seeding order:
-
-1. copy bundled `data/manuf` from packaged app if present;
-2. if missing, download from Wireshark `manuf` URL during install/bootstrap;
-3. only if both fail, let the app try runtime recovery from Settings.
-
-## Scan UI contract
-
-- Top controls must stay compact and fixed-width instead of stretching across wide monitors.
-- Visible controls: `Диапазон IP`, `Адаптер`, `Авто IP`, `Маска`, `Старт`.
-- Table columns: `IP`, `Пинг`, `MAC`, `Вендор`, `Маршрут`, `Порт`.
-- Only active or detected hosts should be inserted into the grid.
-- On macOS, ARP parsing must normalize both one-digit and two-digit hex octets before vendor lookup.
-
-## SSH strategy
-
-Current native runtime uses a compiled C++ wrapper, but the SSH transport still depends on an SSH client on the target OS:
-
-- macOS/Linux: `ssh`, optionally `sshpass` for password injection;
-- Windows: `ssh.exe` or `plink.exe`.
-
-Windows installer note:
-
-- `cpp/scripts/install_windows.bat` performs a best-effort install of the Windows OpenSSH client if `ssh.exe` is missing.
-
-If zero external SSH client dependency is required, the next hardening step is replacing this wrapper with bundled `libssh` or `libssh2`.
-
-## Installer outputs
-
-Windows:
+Installer expectations:
 
 - Inno Setup wizard
-- language selection page
-- target directory page
-- desktop shortcut task
+- language selection
+- target directory selection
+- desktop shortcut option
 - seeded `%APPDATA%\NetWorkTools\data\manuf`
 
-macOS:
+## Linux Packaging Contract
 
-- DMG containing `Install Network Tools 1.0.5.app`
-- installed app path `/Applications/Network Tools 1.0.5.app`
-- interactive installer prompts for language, destination folder and desktop shortcut
-- seeded `~/Library/Application Support/NetWorkTools/data/manuf`
+Current Linux path is a bootstrap installer:
 
-Linux:
+- built on macOS
+- copied with source payload
+- seeds vendor DB
+- installs build dependencies on the Linux target
+- builds and installs the native app on the Linux target
 
-- bootstrap `.run` installer built from macOS
-- prompts for language, destination folder and desktop shortcut
-- installs Linux build dependencies on target host
-- builds and installs native binary on target Linux host
+It is not currently a prebuilt Linux desktop artifact produced from this macOS workspace.
 
-## Launch commands
+## Build Commands
 
 Build locally:
 
@@ -136,19 +243,14 @@ Run on macOS/Linux from build output:
 ./cpp/build/NetworkToolsQt
 ```
 
-If CMake generates an app bundle on macOS, run:
-
-```bash
-open "/Applications/Network Tools 1.0.5.app"
-```
-
-## Packaging commands
+## Packaging Commands
 
 macOS:
 
 ```bash
 bash cpp/scripts/package_macos.sh
 bash cpp/scripts/build_macos_installer.sh
+bash cpp/scripts/install_macos.sh
 ```
 
 Windows:
@@ -157,6 +259,7 @@ Windows:
 cpp\scripts\package_windows.bat
 cpp\scripts\build_windows_installer.bat
 cpp\scripts\bootstrap_windows_installer.bat
+cpp\scripts\install_windows.bat
 ```
 
 Linux:
@@ -164,3 +267,14 @@ Linux:
 ```bash
 bash cpp/scripts/build_linux_installer.sh
 ```
+
+## Known Mismatches To Remember
+
+These are current reality and should not be hidden:
+
+- installer naming in scripts is not fully normalized
+- direct macOS bundle naming and installer naming use different conventions
+- script and installer version labels are currently normalized to `1.0.6`
+- packaging on a clean machine may require additional attention around plugin-driven Qt dependencies
+
+If a future task is about release engineering, inspect the scripts before assuming the docs are perfectly synchronized with every hardcoded name.

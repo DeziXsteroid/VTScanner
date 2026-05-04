@@ -1,6 +1,7 @@
 #include "network/UdpSocketSession.h"
 
 #include <QHostAddress>
+#include <QHostInfo>
 #include <QUdpSocket>
 
 namespace nt {
@@ -58,7 +59,31 @@ void UdpSocketSession::sendDatagram(const QString& host, quint16 port, const QBy
         emit stateChanged(QStringLiteral("UDP-сокет закрыт"));
         return;
     }
-    const auto written = m_socket->writeDatagram(bytes, QHostAddress(host), port);
+
+    QHostAddress address(host.trimmed());
+    if (address.isNull() && !host.trimmed().isEmpty()) {
+        const auto info = QHostInfo::fromName(host.trimmed());
+        if (info.error() == QHostInfo::NoError) {
+            for (const auto& candidate : info.addresses()) {
+                if (candidate.protocol() == QAbstractSocket::IPv4Protocol) {
+                    address = candidate;
+                    break;
+                }
+            }
+            if (address.isNull() && !info.addresses().isEmpty()) {
+                address = info.addresses().first();
+            }
+        }
+    }
+    if (address.isNull()) {
+        if (errorText != nullptr) {
+            *errorText = QStringLiteral("Не удалось разрешить UDP-хост");
+        }
+        emit stateChanged(QStringLiteral("Не удалось разрешить UDP-хост"));
+        return;
+    }
+
+    const auto written = m_socket->writeDatagram(bytes, address, port);
     if (written < 0 && errorText != nullptr) {
         *errorText = m_socket->errorString();
     }

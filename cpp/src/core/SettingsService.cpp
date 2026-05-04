@@ -86,13 +86,21 @@ void SettingsService::setValue(const QString& key, const QJsonValue& value) {
 
 QSize SettingsService::initialWindowSize() const {
     const auto object = section(QStringLiteral("window"));
-    const int width = qBound(840, object.value(QStringLiteral("width")).toInt(874), 920);
-    const int height = qBound(440, object.value(QStringLiteral("height")).toInt(472), 522);
+    const int width = qBound(840, object.value(QStringLiteral("width")).toInt(874), 3200);
+    const int height = qBound(440, object.value(QStringLiteral("height")).toInt(472), 2200);
     return QSize(width, height);
 }
 
 int SettingsService::scanWorkers() const {
-    return qBound(8, value(QStringLiteral("scan_workers"), 96).toInt(96), 96);
+    return qBound(8, value(QStringLiteral("scan_workers"), 96).toInt(96), 128);
+}
+
+QString SettingsService::scanProfile() const {
+    const QString profile = value(QStringLiteral("scan_profile"), QStringLiteral("balanced")).toString(QStringLiteral("balanced")).trimmed().toLower();
+    if (profile == QStringLiteral("fast") || profile == QStringLiteral("reliable")) {
+        return profile;
+    }
+    return QStringLiteral("balanced");
 }
 
 QString SettingsService::theme() const {
@@ -127,9 +135,12 @@ QJsonObject SettingsService::defaultConfig() {
         {QStringLiteral("terminal_text_color"), QStringLiteral("mint")},
         {QStringLiteral("ui_scale"), 92},
         {QStringLiteral("scan_workers"), 96},
+        {QStringLiteral("scan_auto_workers"), true},
+        {QStringLiteral("scan_profile"), QStringLiteral("balanced")},
+        {QStringLiteral("scan_background_refresh"), false},
         {QStringLiteral("auto_scan_enabled"), false},
         {QStringLiteral("auto_scan_interval_sec"), 30},
-        {QStringLiteral("scan_on_startup"), true},
+        {QStringLiteral("scan_on_startup"), false},
         {QStringLiteral("vendor_auto_update"), true},
         {QStringLiteral("http_history"), QJsonArray{}},
         {QStringLiteral("window"), QJsonObject{
@@ -152,14 +163,14 @@ QJsonObject SettingsService::defaultConfig() {
             {QStringLiteral("profiles"), QJsonArray()},
         }},
         {QStringLiteral("ssh"), QJsonObject{
-            {QStringLiteral("host"), QStringLiteral("127.0.0.1")},
+            {QStringLiteral("host"), QString()},
             {QStringLiteral("port"), 22},
             {QStringLiteral("username"), QString()},
             {QStringLiteral("last_profile"), QString()},
             {QStringLiteral("profiles"), QJsonArray()},
         }},
         {QStringLiteral("telnet"), QJsonObject{
-            {QStringLiteral("host"), QStringLiteral("127.0.0.1")},
+            {QStringLiteral("host"), QString()},
             {QStringLiteral("port"), 23},
             {QStringLiteral("username"), QString()},
             {QStringLiteral("last_profile"), QString()},
@@ -176,7 +187,7 @@ QJsonObject SettingsService::defaultConfig() {
             {QStringLiteral("quick_commands"), QJsonArray{QString(), QString(), QString()}},
         }},
         {QStringLiteral("tcp"), QJsonObject{
-            {QStringLiteral("host"), QStringLiteral("127.0.0.1")},
+            {QStringLiteral("host"), QString()},
             {QStringLiteral("port"), 23},
             {QStringLiteral("local_port"), 0},
             {QStringLiteral("no_delay"), true},
@@ -186,7 +197,7 @@ QJsonObject SettingsService::defaultConfig() {
             {QStringLiteral("quick_commands"), QJsonArray{QString(), QString(), QString()}},
         }},
         {QStringLiteral("udp"), QJsonObject{
-            {QStringLiteral("host"), QStringLiteral("127.0.0.1")},
+            {QStringLiteral("host"), QString()},
             {QStringLiteral("remote_port"), 52381},
             {QStringLiteral("local_port"), 0},
             {QStringLiteral("reuse_address"), true},

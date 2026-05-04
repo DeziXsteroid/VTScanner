@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QMutex>
 #include <QObject>
 
 namespace nt {
@@ -27,6 +28,7 @@ private:
     static QString normalizeMac(const QString& mac);
     static bool parsePrefixToken(const QString& token, quint64& prefixValue, int& bits);
 
+    mutable QMutex m_mutex;
     QHash<int, QHash<quint64, QString>> m_byBits;
     bool m_loaded {false};
     QString m_status;

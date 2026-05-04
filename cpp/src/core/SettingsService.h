@@ -25,6 +25,7 @@ public:
 
     QSize initialWindowSize() const;
     int scanWorkers() const;
+    QString scanProfile() const;
     QString theme() const;
     QString language() const;
 

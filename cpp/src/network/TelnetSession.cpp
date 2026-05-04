@@ -3,13 +3,27 @@
 #include "core/TerminalSanitizer.h"
 
 #include <QTcpSocket>
+#include <QTimer>
 
 namespace nt {
 
 TelnetSession::TelnetSession(QObject* parent)
     : QObject(parent)
-    , m_socket(new QTcpSocket(this)) {
+    , m_socket(new QTcpSocket(this))
+    , m_connectTimer(new QTimer(this)) {
+    m_connectTimer->setSingleShot(true);
+    m_connectTimer->setInterval(8000);
+    connect(m_connectTimer, &QTimer::timeout, this, [this]() {
+        if (m_socket->state() == QAbstractSocket::ConnectedState
+            || m_socket->state() == QAbstractSocket::UnconnectedState) {
+            return;
+        }
+        m_socket->abort();
+        emit stateChanged(QStringLiteral("Telnet timeout"));
+        emit connectedChanged(false);
+    });
     connect(m_socket, &QTcpSocket::connected, this, [this]() {
+        m_connectTimer->stop();
         emit stateChanged(QStringLiteral("Telnet %1:%2").arg(m_profile.host).arg(m_profile.port));
         emit connectedChanged(true);
     });
@@ -19,10 +33,12 @@ TelnetSession::TelnetSession(QObject* parent)
         emit outputReady(text);
     });
     connect(m_socket, &QTcpSocket::disconnected, this, [this]() {
+        m_connectTimer->stop();
         emit stateChanged(QStringLiteral("Отключено"));
         emit connectedChanged(false);
     });
     connect(m_socket, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
+        m_connectTimer->stop();
         emit stateChanged(m_socket->errorString());
         emit connectedChanged(false);
     });
@@ -34,9 +50,11 @@ void TelnetSession::open(const SessionProfile& profile) {
     m_passwordSent = false;
     m_socket->abort();
     m_socket->connectToHost(profile.host, profile.port);
+    m_connectTimer->start();
 }
 
 void TelnetSession::close() {
+    m_connectTimer->stop();
     m_socket->disconnectFromHost();
     if (m_socket->state() != QAbstractSocket::UnconnectedState) {
         m_socket->abort();

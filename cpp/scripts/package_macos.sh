@@ -31,9 +31,7 @@ SEED_DIR="$RESOURCES_DIR/data"
 SEED_PATH="$SEED_DIR/manuf"
 BIN_DIR="$RESOURCES_DIR/bin"
 MANUF_URL="https://www.wireshark.org/download/automated/data/manuf"
-FPING_SOURCE="/usr/bin/fping"
-DEPLOY_LIB_DIR="$DIST_DIR/lib"
-QT_PDF_SEARCH_LINK="$DEPLOY_LIB_DIR/QtPdf.framework"
+FPING_SOURCE="${NETWORKTOOLS_FPING_SOURCE:-}"
 
 TEMP_DMG=""
 MOUNT_DEVICE=""
@@ -80,23 +78,23 @@ bundle_extra_runtime_deps() {
   copy_optional_dependency "$BREW_PREFIX/lib/libdbus-1.3.dylib" "$FRAMEWORKS_DIR"
 }
 
-prepare_deploy_search_paths() {
-  local qt_pdf_source=""
-  if [[ -d "$BREW_PREFIX/lib/QtPdf.framework" ]]; then
-    qt_pdf_source="$BREW_PREFIX/lib/QtPdf.framework"
-  elif [[ -d "$BREW_PREFIX/Frameworks/QtPdf.framework" ]]; then
-    qt_pdf_source="$BREW_PREFIX/Frameworks/QtPdf.framework"
-  elif [[ -d "$QT_PREFIX/lib/QtPdf.framework" ]]; then
-    qt_pdf_source="$QT_PREFIX/lib/QtPdf.framework"
-  elif [[ -d "$QT_PREFIX/Frameworks/QtPdf.framework" ]]; then
-    qt_pdf_source="$QT_PREFIX/Frameworks/QtPdf.framework"
+find_optional_tool() {
+  local name="$1"
+  local configured="${2:-}"
+  if [[ -n "$configured" && -x "$configured" ]]; then
+    printf '%s\n' "$configured"
+    return
   fi
-
-  if [[ -n "$qt_pdf_source" ]]; then
-    mkdir -p "$DEPLOY_LIB_DIR"
-    rm -f "$QT_PDF_SEARCH_LINK"
-    ln -s "$qt_pdf_source" "$QT_PDF_SEARCH_LINK"
+  if command -v "$name" >/dev/null 2>&1; then
+    command -v "$name"
+    return
   fi
+  for candidate in "/usr/bin/$name" "/usr/local/bin/$name" "$BREW_PREFIX/bin/$name"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
 }
 
 configure_dmg_finder_window() {
@@ -183,14 +181,16 @@ fi
 rm -rf "$APP_PATH"
 cp -R "$BUILD_APP_PATH" "$APP_PATH"
 
-prepare_deploy_search_paths
-
-macdeployqt "$APP_PATH" \
-  -always-overwrite \
-  -no-strip \
-  "-libpath=$BREW_PREFIX/lib" \
-  "-libpath=$BREW_PREFIX/Frameworks" \
+MACDEPLOYQT_ARGS=(
+  -always-overwrite
+  "-libpath=$BREW_PREFIX/lib"
+  "-libpath=$BREW_PREFIX/Frameworks"
   "-libpath=$QT_PREFIX/lib"
+)
+if [[ "${NETWORKTOOLS_KEEP_SYMBOLS:-0}" == "1" ]]; then
+  MACDEPLOYQT_ARGS+=(-no-strip)
+fi
+macdeployqt "$APP_PATH" "${MACDEPLOYQT_ARGS[@]}"
 
 bundle_extra_runtime_deps
 
@@ -198,9 +198,12 @@ rm -rf "$APP_PATH/Contents/MacOS/data"
 mkdir -p "$SEED_DIR"
 curl -L --fail --silent --show-error "$MANUF_URL" -o "$SEED_PATH"
 mkdir -p "$BIN_DIR"
-if [[ -f "$FPING_SOURCE" ]]; then
+FPING_SOURCE="$(find_optional_tool fping "$FPING_SOURCE" || true)"
+if [[ -n "$FPING_SOURCE" && -f "$FPING_SOURCE" ]]; then
   cp -f "$FPING_SOURCE" "$BIN_DIR/fping"
   chmod 755 "$BIN_DIR/fping"
+else
+  echo "Optional fping was not found; packaged app will use system ping fallback." >&2
 fi
 
 codesign --force --deep --sign - --timestamp=none "$APP_PATH"

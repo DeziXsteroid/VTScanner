@@ -155,9 +155,18 @@ private:
     void applyScanTableFilter();
     void applyScanColumnVisibility();
     void saveScanColumnVisibility() const;
+    void applyScanColumnWidths();
+    void saveScanColumnWidths() const;
     void updateScanSortButton();
     void toggleScanSortOrder();
     void refreshScanToolbarIcons();
+    void resetScanLog();
+    void appendScanLogLine(const QString& line);
+    void openScanLog();
+    bool scanBackgroundRefreshEnabled() const;
+    void updateScanBackgroundRefreshTimer();
+    void startScanBackgroundRefresh();
+    void finalizeScanBackgroundRefresh(const QList<nt::ScanRecord>& records, int durationMs);
     void appendScanRecord(const nt::ScanRecord& record);
     void finalizeScan(const QList<nt::ScanRecord>& records, int durationMs);
     void updateScanSummary();
@@ -165,6 +174,7 @@ private:
     void updateSelectedHostPanel();
     void toggleScanCompareMode(bool enabled);
     void refreshScanComparisonBadges();
+    void showScanCellDetails(int row, int column);
     void openScanContextMenu(const QPoint& position);
     void openScanRowInBrowser(int row);
     void openScanRowPing(int row);
@@ -247,14 +257,20 @@ private:
     QMenu* m_scanToolsMenu {nullptr};
     QMap<int, QAction*> m_scanColumnActions;
     QTimer* m_scanAutoScanTimer {nullptr};
+    QTimer* m_scanColumnWidthSaveTimer {nullptr};
+    QTimer* m_scanBackgroundRefreshTimer {nullptr};
     QMap<QString, QLabel*> m_hostLabels;
     QList<nt::ScanRecord> m_scanRows;
     QSet<QString> m_scanComparisonBaseline;
     QSet<QString> m_scanNewIps;
+    QMap<QString, int> m_scanRefreshMisses;
     bool m_scanCompareMode {false};
     bool m_scanCompareHasBaseline {false};
     bool m_scanSortAscending {true};
     bool m_scanLaunchPending {false};
+    bool m_scanPolishingActive {false};
+    bool m_scanBackgroundRefreshRun {false};
+    QString m_scanLogPath;
     quint64 m_currentScanGeneration {0};
 
     QComboBox* m_requestMethodCombo {nullptr};

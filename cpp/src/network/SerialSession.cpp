@@ -96,10 +96,27 @@ void SerialSession::sendBytes(const QByteArray& bytes, QString* errorText) {
         emit stateChanged(QStringLiteral("Serial не подключен"));
         return;
     }
-    const auto written = m_port->write(bytes);
-    if (written < 0 && errorText != nullptr) {
-        *errorText = m_port->errorString();
+    qint64 totalWritten = 0;
+    while (totalWritten < bytes.size()) {
+        const auto written = m_port->write(bytes.constData() + totalWritten, bytes.size() - totalWritten);
+        if (written < 0) {
+            if (errorText != nullptr) {
+                *errorText = m_port->errorString();
+            }
+            emit stateChanged(m_port->errorString());
+            return;
+        }
+        if (written == 0 && !m_port->waitForBytesWritten(120)) {
+            const QString text = QStringLiteral("Serial записал не все байты");
+            if (errorText != nullptr) {
+                *errorText = text;
+            }
+            emit stateChanged(text);
+            return;
+        }
+        totalWritten += written;
     }
+    m_port->flush();
 }
 
 bool SerialSession::isOpen() const {

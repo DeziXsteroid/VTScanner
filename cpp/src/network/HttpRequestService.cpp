@@ -29,9 +29,17 @@ void HttpRequestService::send(const HttpRequestSpec& spec) {
     url.setQuery(query);
 
     QNetworkRequest request(url);
-    request.setTransferTimeout(spec.timeoutSec * 1000);
+    request.setTransferTimeout(qBound(1, spec.timeoutSec, 3600) * 1000);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    bool hasUserAgent = false;
     for (auto it = spec.headers.begin(); it != spec.headers.end(); ++it) {
+        if (it.key().compare(QStringLiteral("User-Agent"), Qt::CaseInsensitive) == 0) {
+            hasUserAgent = true;
+        }
         request.setRawHeader(it.key().toUtf8(), it->toVariant().toString().toUtf8());
+    }
+    if (!hasUserAgent) {
+        request.setRawHeader("User-Agent", QByteArrayLiteral("NetworkToolsQt/1.0.6"));
     }
 
     if (!spec.username.isEmpty()) {

@@ -169,7 +169,7 @@ inline QJsonObject sessionProfileToJson(const SessionProfile& profile) {
 inline SessionProfile sessionProfileFromJson(const QJsonObject& object, quint16 defaultPort) {
     SessionProfile profile;
     profile.name = object.value(QStringLiteral("name")).toString();
-    profile.host = object.value(QStringLiteral("host")).toString(QStringLiteral("127.0.0.1"));
+    profile.host = object.value(QStringLiteral("host")).toString();
     profile.port = static_cast<quint16>(object.value(QStringLiteral("port")).toInt(defaultPort));
     profile.username = object.value(QStringLiteral("username")).toString();
     profile.password = object.value(QStringLiteral("password")).toString();

@@ -5,6 +5,7 @@
 #include <QObject>
 
 class QTcpSocket;
+class QTimer;
 
 namespace nt {
 
@@ -29,6 +30,7 @@ private:
     void handlePrompt(const QString& text);
 
     QTcpSocket* m_socket {nullptr};
+    QTimer* m_connectTimer {nullptr};
     SessionProfile m_profile;
     bool m_usernameSent {false};
     bool m_passwordSent {false};

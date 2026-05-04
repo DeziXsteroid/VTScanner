@@ -1,6 +1,17 @@
 .DS_Store
-cpp/build/
+.idea/
+
+# Local CMake / deployment outputs
+cpp/build*/
 cpp/dist/
+cpp/tools/
+
+# Local packaging helper environments
 cpp/.venv-packaging/
-*.user
+cpp/.venv-packaging-win/
+
+# Runtime/generated local state
+*.log
 *.tmp
+*.bak
+*.user

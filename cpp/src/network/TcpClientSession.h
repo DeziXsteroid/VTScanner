@@ -3,6 +3,7 @@
 #include <QObject>
 
 class QTcpSocket;
+class QTimer;
 
 namespace nt {
 
@@ -24,6 +25,7 @@ signals:
 
 private:
     QTcpSocket* m_socket {nullptr};
+    QTimer* m_connectTimer {nullptr};
     QString m_host;
     quint16 m_port {0};
     quint16 m_localPort {0};
