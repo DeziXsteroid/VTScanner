@@ -137,7 +137,7 @@ QWidget* MainWindow::createScanPage() {
     m_scanStopButton->hide();
 
     connect(m_scanStartButton, &QPushButton::clicked, this, [this]() {
-        if (m_scanner->isRunning() || m_scanLaunchPending) {
+        if (m_scanner != nullptr && (m_scanner->isRunning() || m_scanLaunchPending)) {
             stopScan();
         } else {
             startScan();
@@ -169,9 +169,11 @@ QWidget* MainWindow::createScanPage() {
         m_settings->setValue(QStringLiteral("auto_scan_enabled"), checked);
         m_settings->save();
         if (checked) {
-            m_scanAutoScanTimer->start();
+            if (m_scanAutoScanTimer != nullptr) {
+                m_scanAutoScanTimer->start();
+            }
             updateScanFooter(uiText(m_settings, "Авто скан включен", "Auto scan enabled"));
-            if (!m_scanner->isRunning()) {
+            if (m_scanner != nullptr && !m_scanner->isRunning() && !m_scanLaunchPending) {
                 if (scanBackgroundRefreshEnabled() && !m_scanRows.isEmpty()) {
                     startScanBackgroundRefresh();
                 } else {
@@ -179,7 +181,9 @@ QWidget* MainWindow::createScanPage() {
                 }
             }
         } else {
-            m_scanAutoScanTimer->stop();
+            if (m_scanAutoScanTimer != nullptr) {
+                m_scanAutoScanTimer->stop();
+            }
             updateScanFooter(uiText(m_settings, "Авто скан выключен", "Auto scan disabled"));
         }
     });

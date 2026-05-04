@@ -1147,7 +1147,7 @@ QString decodeDnsName(const QByteArray& packet, int& offset) {
     return {};
 }
 
-QByteArray buildMdnsPtrQuery(const QString& name) {
+QByteArray buildMdnsQuery(const QString& name, quint16 type) {
     QByteArray packet;
     packet.reserve(64 + name.size());
     appendDnsU16(packet, 0);
@@ -1157,9 +1157,21 @@ QByteArray buildMdnsPtrQuery(const QString& name) {
     appendDnsU16(packet, 0);
     appendDnsU16(packet, 0);
     packet.append(encodeDnsName(name));
-    appendDnsU16(packet, 12);
+    appendDnsU16(packet, type);
     appendDnsU16(packet, 0x8001);
     return packet;
+}
+
+QByteArray buildMdnsPtrQuery(const QString& name) {
+    return buildMdnsQuery(name, 12);
+}
+
+QByteArray buildMdnsSrvQuery(const QString& name) {
+    return buildMdnsQuery(name, 33);
+}
+
+QByteArray buildMdnsAQuery(const QString& name) {
+    return buildMdnsQuery(name, 1);
 }
 
 QString serviceTypeFromDnsName(QString name) {
@@ -1226,7 +1238,42 @@ QList<QString> sortedIpsForMdnsReverse(const QSet<QString>& scannedIps, int limi
     return ips;
 }
 
-void parseMdnsPacketIntoResolution(const QByteArray& packet, const QSet<QString>& scannedIps, BonjourResolution& resolved) {
+struct MdnsResolutionState {
+    BonjourResolution resolved;
+    QHash<QString, QString> serviceByInstance;
+    QHash<QString, QString> instanceByFullName;
+    QHash<QString, QString> targetByInstance;
+    QHash<QString, QStringList> ipsByHost;
+    QSet<QString> queriedSrvInstances;
+    QSet<QString> queriedHosts;
+};
+
+void materializeMdnsState(const QSet<QString>& scannedIps, MdnsResolutionState& state) {
+    for (auto it = state.serviceByInstance.constBegin(); it != state.serviceByInstance.constEnd(); ++it) {
+        const QString key = it.key();
+        const QString serviceType = it.value();
+        const QString instanceName = state.instanceByFullName.value(key);
+        const QString targetHost = state.targetByInstance.value(key);
+        const QString displayName = prettyBonjourName(serviceType, instanceName, targetHost);
+        if (displayName.isEmpty()) {
+            continue;
+        }
+
+        const QString instanceMac = extractBonjourInstanceMac(instanceName);
+        if (!instanceMac.isEmpty() && !state.resolved.namesByMac.contains(instanceMac)) {
+            state.resolved.namesByMac.insert(instanceMac, displayName);
+        }
+
+        const auto targetIps = state.ipsByHost.value(targetHost.toLower());
+        for (const auto& ip : targetIps) {
+            if (scannedIps.contains(ip) && !state.resolved.namesByIp.contains(ip)) {
+                state.resolved.namesByIp.insert(ip, displayName);
+            }
+        }
+    }
+}
+
+void parseMdnsPacketIntoState(const QByteArray& packet, const QSet<QString>& scannedIps, MdnsResolutionState& state) {
     if (packet.size() < 12) {
         return;
     }
@@ -1244,10 +1291,6 @@ void parseMdnsPacketIntoResolution(const QByteArray& packet, const QSet<QString>
         }
     }
 
-    QHash<QString, QString> serviceByInstance;
-    QHash<QString, QString> instanceByFullName;
-    QHash<QString, QString> targetByInstance;
-    QHash<QString, QStringList> ipsByHost;
     const int recordCount = answerCount + authorityCount + additionalCount;
     for (int index = 0; index < recordCount; ++index) {
         const QString recordName = decodeDnsName(packet, offset);
@@ -1272,22 +1315,22 @@ void parseMdnsPacketIntoResolution(const QByteArray& packet, const QSet<QString>
             const QString reverseIp = ipFromReverseMdnsName(recordName);
             if (!reverseIp.isEmpty() && scannedIps.contains(reverseIp)) {
                 const QString normalized = normalizeResolvedName(pointerName, reverseIp);
-                if (!normalized.isEmpty() && !resolved.namesByIp.contains(reverseIp)) {
-                    resolved.namesByIp.insert(reverseIp, normalized);
+                if (!normalized.isEmpty() && !state.resolved.namesByIp.contains(reverseIp)) {
+                    state.resolved.namesByIp.insert(reverseIp, normalized);
                 }
             } else {
                 const QString serviceType = serviceTypeFromDnsName(recordName);
                 if (!serviceType.isEmpty()) {
                     const QString key = pointerName.toLower();
-                    serviceByInstance.insert(key, serviceType);
-                    instanceByFullName.insert(key, instanceNameFromServiceName(pointerName, serviceType));
+                    state.serviceByInstance.insert(key, serviceType);
+                    state.instanceByFullName.insert(key, instanceNameFromServiceName(pointerName, serviceType));
                 }
             }
         } else if (type == 33 && dataLength >= 7) {
             int targetOffset = dataOffset + 6;
             const QString targetHost = decodeDnsName(packet, targetOffset);
             if (!targetHost.isEmpty()) {
-                targetByInstance.insert(recordName.toLower(), targetHost);
+                state.targetByInstance.insert(recordName.toLower(), targetHost);
             }
         } else if (type == 1 && dataLength == 4) {
             const QString ip = QStringLiteral("%1.%2.%3.%4")
@@ -1296,44 +1339,26 @@ void parseMdnsPacketIntoResolution(const QByteArray& packet, const QSet<QString>
                 .arg(static_cast<quint8>(packet.at(dataOffset + 2)))
                 .arg(static_cast<quint8>(packet.at(dataOffset + 3)));
             if (scannedIps.contains(ip)) {
-                ipsByHost[recordName.toLower()].append(ip);
+                auto& hostIps = state.ipsByHost[recordName.toLower()];
+                if (!hostIps.contains(ip)) {
+                    hostIps.append(ip);
+                }
             }
         }
 
         offset += dataLength;
     }
 
-    for (auto it = serviceByInstance.constBegin(); it != serviceByInstance.constEnd(); ++it) {
-        const QString key = it.key();
-        const QString serviceType = it.value();
-        const QString instanceName = instanceByFullName.value(key);
-        const QString targetHost = targetByInstance.value(key);
-        const QString displayName = prettyBonjourName(serviceType, instanceName, targetHost);
-        if (displayName.isEmpty()) {
-            continue;
-        }
-
-        const QString instanceMac = extractBonjourInstanceMac(instanceName);
-        if (!instanceMac.isEmpty() && !resolved.namesByMac.contains(instanceMac)) {
-            resolved.namesByMac.insert(instanceMac, displayName);
-        }
-
-        const auto targetIps = ipsByHost.value(targetHost.toLower());
-        for (const auto& ip : targetIps) {
-            if (!resolved.namesByIp.contains(ip)) {
-                resolved.namesByIp.insert(ip, displayName);
-            }
-        }
-    }
+    materializeMdnsState(scannedIps, state);
 }
 
 BonjourResolution collectMdnsNamesWithSocket(const QSet<QString>& scannedIps,
-                                             const QStringList& serviceTypes,
-                                             const QString& adapterId,
-                                             int timeoutMs) {
-    BonjourResolution resolved;
+	                                             const QStringList& serviceTypes,
+	                                             const QString& adapterId,
+	                                             int timeoutMs) {
+    MdnsResolutionState state;
     if (scannedIps.isEmpty()) {
-        return resolved;
+        return state.resolved;
     }
 
     QUdpSocket socket;
@@ -1341,7 +1366,7 @@ BonjourResolution collectMdnsNamesWithSocket(const QSet<QString>& scannedIps,
     const auto bindFlags = QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint;
     bool boundToMdnsPort = socket.bind(QHostAddress::AnyIPv4, 5353, bindFlags);
     if (!boundToMdnsPort && !socket.bind(QHostAddress::AnyIPv4, 0, bindFlags)) {
-        return resolved;
+        return state.resolved;
     }
 
     const QNetworkInterface iface = QNetworkInterface::interfaceFromName(adapterId);
@@ -1356,11 +1381,11 @@ BonjourResolution collectMdnsNamesWithSocket(const QSet<QString>& scannedIps,
     socket.setSocketOption(QAbstractSocket::MulticastTtlOption, 255);
 
     QList<QByteArray> queries;
-    queries.reserve(serviceTypes.size() + qMin(scannedIps.size(), 384));
+    queries.reserve((serviceTypes.size() * 2) + qMin(scannedIps.size(), 512));
     for (const auto& serviceType : serviceTypes) {
         queries.append(buildMdnsPtrQuery(serviceType + QStringLiteral(".local")));
     }
-    for (const auto& ip : sortedIpsForMdnsReverse(scannedIps, 384)) {
+    for (const auto& ip : sortedIpsForMdnsReverse(scannedIps, 512)) {
         const QString reverseName = reverseMdnsNameForIp(ip);
         if (!reverseName.isEmpty()) {
             queries.append(buildMdnsPtrQuery(reverseName));
@@ -1372,6 +1397,33 @@ BonjourResolution collectMdnsNamesWithSocket(const QSet<QString>& scannedIps,
             socket.writeDatagram(queries.at(index), mdnsGroup, 5353);
             if ((index + 1) % 64 == 0) {
                 QThread::msleep(2);
+            }
+        }
+    };
+    const auto sendFollowupQueries = [&]() {
+        QList<QByteArray> followups;
+        for (auto it = state.serviceByInstance.constBegin(); it != state.serviceByInstance.constEnd(); ++it) {
+            const QString instanceKey = it.key();
+            if (!state.queriedSrvInstances.contains(instanceKey)) {
+                state.queriedSrvInstances.insert(instanceKey);
+                followups.append(buildMdnsSrvQuery(instanceKey));
+            }
+        }
+        for (auto it = state.targetByInstance.constBegin(); it != state.targetByInstance.constEnd(); ++it) {
+            QString targetHost = it.value().trimmed();
+            while (targetHost.endsWith(QLatin1Char('.'))) {
+                targetHost.chop(1);
+            }
+            const QString hostKey = targetHost.toLower();
+            if (!hostKey.isEmpty() && !state.queriedHosts.contains(hostKey)) {
+                state.queriedHosts.insert(hostKey);
+                followups.append(buildMdnsAQuery(targetHost));
+            }
+        }
+        for (int index = 0; index < followups.size(); ++index) {
+            socket.writeDatagram(followups.at(index), mdnsGroup, 5353);
+            if ((index + 1) % 32 == 0) {
+                QThread::msleep(1);
             }
         }
     };
@@ -1393,10 +1445,12 @@ BonjourResolution collectMdnsNamesWithSocket(const QSet<QString>& scannedIps,
             QByteArray datagram;
             datagram.resize(static_cast<int>(socket.pendingDatagramSize()));
             socket.readDatagram(datagram.data(), datagram.size());
-            parseMdnsPacketIntoResolution(datagram, scannedIps, resolved);
+            parseMdnsPacketIntoState(datagram, scannedIps, state);
         }
+        sendFollowupQueries();
     }
-    return resolved;
+    materializeMdnsState(scannedIps, state);
+    return state.resolved;
 }
 
 BonjourResolution collectBonjourNamesForService(const QSet<QString>& scannedIps, const QString& serviceType) {

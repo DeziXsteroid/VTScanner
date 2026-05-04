@@ -113,7 +113,11 @@ MainWindow::MainWindow(QWidget* parent)
     updateScanFooter(localizedScanIdleText(m_settings));
 
     connect(m_scanAutoScanTimer, &QTimer::timeout, this, [this]() {
-        if (m_scanAutoScanCheck != nullptr && m_scanAutoScanCheck->isChecked() && !m_scanner->isRunning()) {
+        if (m_scanAutoScanCheck != nullptr
+            && m_scanAutoScanCheck->isChecked()
+            && m_scanner != nullptr
+            && !m_scanner->isRunning()
+            && !m_scanLaunchPending) {
             if (scanBackgroundRefreshEnabled() && !m_scanRows.isEmpty()) {
                 startScanBackgroundRefresh();
             } else {
@@ -163,13 +167,14 @@ MainWindow::MainWindow(QWidget* parent)
     const bool scanOnStartup = m_settings->value(QStringLiteral("scan_on_startup"), false).toBool(false);
     if (autoScanEnabled || scanOnStartup) {
         QTimer::singleShot(250, this, [this]() {
-            if (!m_scanner->isRunning()) {
+            if (m_scanner != nullptr && !m_scanner->isRunning() && !m_scanLaunchPending) {
                 startScan();
             }
         });
     }
 
     connect(m_scanner, &nt::NetworkScanService::scanStarted, this, [this]() {
+        m_scanLaunchPending = false;
         m_scanPolishingActive = false;
         if (m_scanBackgroundRefreshRun) {
             if (m_scanStartButton != nullptr) {
@@ -191,6 +196,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_scanner, &nt::NetworkScanService::scanFinished, this, &MainWindow::finalizeScan);
     connect(m_scanner, &nt::NetworkScanService::scanFailed, this, [this](const QString& errorText) {
         const bool backgroundRefresh = m_scanBackgroundRefreshRun;
+        m_scanLaunchPending = false;
         m_scanBackgroundRefreshRun = false;
         m_scanPolishingActive = false;
         appendScanLogLine(QStringLiteral("failed error=%1").arg(errorText));

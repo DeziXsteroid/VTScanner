@@ -193,11 +193,15 @@ void MainWindow::startScanBackgroundRefresh() {
         || m_scanner == nullptr
         || m_scanner->isRunning()
         || m_scanRows.isEmpty()
-        || m_scanLaunchPending) {
+        || m_scanLaunchPending
+        || m_scanStartIp == nullptr
+        || m_scanEndIp == nullptr
+        || m_scanAdapterCombo == nullptr) {
         updateScanBackgroundRefreshTimer();
         return;
     }
 
+    m_scanLaunchPending = true;
     ++m_currentScanGeneration;
     m_scanBackgroundRefreshRun = true;
     m_scanPolishingActive = false;
@@ -226,9 +230,15 @@ void MainWindow::startScanBackgroundRefresh() {
 }
 
 void MainWindow::startScan() {
-    if (m_scanner->isRunning() || m_scanLaunchPending) {
+    if (m_scanner == nullptr
+        || m_scanner->isRunning()
+        || m_scanLaunchPending
+        || m_scanStartIp == nullptr
+        || m_scanEndIp == nullptr
+        || m_scanAdapterCombo == nullptr) {
         return;
     }
+    m_scanLaunchPending = true;
     if (m_scanBackgroundRefreshTimer != nullptr) {
         m_scanBackgroundRefreshTimer->stop();
     }
@@ -294,9 +304,12 @@ void MainWindow::startScan() {
 void MainWindow::stopScan() {
     const bool backgroundRefresh = m_scanBackgroundRefreshRun;
     ++m_currentScanGeneration;
+    m_scanLaunchPending = false;
     m_scanBackgroundRefreshRun = false;
     m_scanPolishingActive = false;
-    m_scanner->cancel();
+    if (m_scanner != nullptr) {
+        m_scanner->cancel();
+    }
     if (m_scanStartButton != nullptr) {
         m_scanStartButton->setEnabled(true);
         m_scanStartButton->setText(uiText(m_settings, "▶ Старт", "▶ Start"));
@@ -915,6 +928,7 @@ void MainWindow::appendScanRecord(const nt::ScanRecord& record) {
 }
 
 void MainWindow::finalizeScanBackgroundRefresh(const QList<nt::ScanRecord>& records, int durationMs) {
+    m_scanLaunchPending = false;
     const QList<nt::ScanRecord> previousRows = m_scanRows;
     QSet<QString> refreshedIps;
     QList<nt::ScanRecord> sortedRecords = records;
@@ -1001,6 +1015,7 @@ void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int duration
     if (!records.isEmpty() && records.first().generation != m_currentScanGeneration) {
         return;
     }
+    m_scanLaunchPending = false;
     if (m_scanBackgroundRefreshRun) {
         finalizeScanBackgroundRefresh(records, durationMs);
         return;
