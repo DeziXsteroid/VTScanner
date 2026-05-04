@@ -327,6 +327,14 @@ bool hasUsefulSeedSignal(const ScanRecord& record) {
         || !isUnknownVendorLabel(record.vendor);
 }
 
+bool needsNameEnrichment(const ScanRecord& record) {
+    return isUnknownVendorLabel(record.hostName)
+        && (record.status == HostStatus::Online
+            || !isUnknownVendorLabel(record.webDetect)
+            || !isUnknownVendorLabel(record.portsDisplay)
+            || (!record.mac.trimmed().isEmpty() && record.mac != QStringLiteral("-")));
+}
+
 int quickPingTimeoutForProfile(const QString& profile) {
     const QString normalized = profile.trimmed().toLower();
     if (normalized == QStringLiteral("fast")) {
@@ -369,6 +377,10 @@ struct BonjourResolution {
     QHash<QString, QString> namesByIp;
     QHash<QString, QString> namesByMac;
 };
+
+bool isEmptyBonjourResolution(const BonjourResolution& resolution) {
+    return resolution.namesByIp.isEmpty() && resolution.namesByMac.isEmpty();
+}
 
 struct ScanTiming {
     int pingTimeoutMs {650};
@@ -448,6 +460,39 @@ int sweepChunkSizeForProfile(const QString& profile) {
     return 256;
 }
 
+QStringList priorityBonjourServiceTypes() {
+    return {
+        QStringLiteral("_device-info._tcp"),
+        QStringLiteral("_companion-link._tcp"),
+        QStringLiteral("_airplay._tcp"),
+        QStringLiteral("_raop._tcp"),
+        QStringLiteral("_apple-mobdev2._tcp"),
+        QStringLiteral("_workstation._tcp"),
+        QStringLiteral("_ssh._tcp"),
+        QStringLiteral("_http._tcp"),
+        QStringLiteral("_https._tcp"),
+    };
+}
+
+QStringList allBonjourServiceTypes() {
+    QStringList services = priorityBonjourServiceTypes();
+    const QStringList extraServices {
+        QStringLiteral("_smb._tcp"),
+        QStringLiteral("_ipp._tcp"),
+        QStringLiteral("_printer._tcp"),
+        QStringLiteral("_scanner._tcp"),
+        QStringLiteral("_rtsp._tcp"),
+        QStringLiteral("_hap._tcp"),
+        QStringLiteral("_sleep-proxy._udp"),
+    };
+    for (const auto& service : extraServices) {
+        if (!services.contains(service)) {
+            services.append(service);
+        }
+    }
+    return services;
+}
+
 QMutex& resolvedNameCacheMutex() {
     static QMutex mutex;
     return mutex;
@@ -475,6 +520,15 @@ void rememberResolvedName(const QString& ip, const QString& mac, const QString& 
     }
     if (!normalizedMac.isEmpty() && normalizedMac != QStringLiteral("-")) {
         resolvedNameByMacCache().insert(normalizedMac, normalizedName);
+    }
+}
+
+void rememberBonjourResolution(const BonjourResolution& resolution) {
+    for (auto it = resolution.namesByMac.constBegin(); it != resolution.namesByMac.constEnd(); ++it) {
+        rememberResolvedName(QString(), it.key(), it.value());
+    }
+    for (auto it = resolution.namesByIp.constBegin(); it != resolution.namesByIp.constEnd(); ++it) {
+        rememberResolvedName(it.key(), QString(), it.value());
     }
 }
 
@@ -884,16 +938,47 @@ QStringList parseDnsSdBrowseInstances(const QString& output, const QString& serv
             instances.append(instance);
         }
     }
+    if (!instances.isEmpty()) {
+        return instances;
+    }
+
+    const QString serviceMarker = serviceType + QStringLiteral(".");
+    const QStringList lines = output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const auto& rawLine : lines) {
+        const QString line = rawLine.trimmed();
+        if (!line.contains(QStringLiteral(" Add "), Qt::CaseInsensitive)
+            || !line.contains(serviceMarker, Qt::CaseInsensitive)) {
+            continue;
+        }
+        const int markerIndex = line.indexOf(serviceMarker, 0, Qt::CaseInsensitive);
+        if (markerIndex < 0) {
+            continue;
+        }
+        const QString instance = line.mid(markerIndex + serviceMarker.size()).trimmed();
+        if (!instance.isEmpty() && !instances.contains(instance)) {
+            instances.append(instance);
+        }
+    }
     return instances;
 }
 
 QString parseDnsSdLookupTarget(const QString& output) {
-    static const QRegularExpression targetRe(QStringLiteral("can be reached at\\s+(\\S+)\\.:\\d+"));
-    const auto match = targetRe.match(output);
-    if (!match.hasMatch()) {
-        return {};
+    const QList<QRegularExpression> patterns {
+        QRegularExpression(QStringLiteral("can be reached at\\s+([^\\s:]+)\\.:\\d+"), QRegularExpression::CaseInsensitiveOption),
+        QRegularExpression(QStringLiteral("can be reached at\\s+([^\\s:]+):\\d+"), QRegularExpression::CaseInsensitiveOption),
+        QRegularExpression(QStringLiteral("\\b(?:target|hostname)\\s*=\\s*([^\\s,;]+)"), QRegularExpression::CaseInsensitiveOption),
+    };
+    for (const auto& pattern : patterns) {
+        const auto match = pattern.match(output);
+        if (match.hasMatch()) {
+            QString target = match.captured(1).trimmed();
+            while (target.endsWith(QLatin1Char('.'))) {
+                target.chop(1);
+            }
+            return target;
+        }
     }
-    return match.captured(1).trimmed();
+    return {};
 }
 
 QString extractBonjourInstanceMac(const QString& instanceName) {
@@ -925,7 +1010,7 @@ QStringList resolveMdnsIpv4(const QString& hostName) {
     const QString output = runTimedCommandCapture(
         QStringLiteral("dscacheutil"),
         {QStringLiteral("-q"), QStringLiteral("host"), QStringLiteral("-a"), QStringLiteral("name"), hostName},
-        1600,
+        1900,
         true
     );
     QStringList ips;
@@ -945,7 +1030,7 @@ QStringList resolveMdnsIpv4(const QString& hostName) {
     return parseDnsSdResolvedIpv4(runTimedCommandCapture(
         QStringLiteral("dns-sd"),
         {QStringLiteral("-G"), QStringLiteral("v4v6"), hostName},
-        1200,
+        1800,
         true
     ));
 #else
@@ -996,7 +1081,7 @@ BonjourResolution collectBonjourNamesForService(const QSet<QString>& scannedIps,
     const QString browseOutput = runTimedCommandCapture(
         QStringLiteral("dns-sd"),
         {QStringLiteral("-B"), serviceType, QStringLiteral("local")},
-        1200,
+        1800,
         true
     );
     const QStringList instances = parseDnsSdBrowseInstances(browseOutput, serviceType);
@@ -1004,7 +1089,7 @@ BonjourResolution collectBonjourNamesForService(const QSet<QString>& scannedIps,
         const QString lookupOutput = runTimedCommandCapture(
             QStringLiteral("dns-sd"),
             {QStringLiteral("-L"), instance, serviceType, QStringLiteral("local")},
-            1200,
+            1800,
             true
         );
         const QString targetHost = parseDnsSdLookupTarget(lookupOutput);
@@ -1034,24 +1119,7 @@ BonjourResolution collectBonjourNames(const QSet<QString>& scannedIps) {
         return resolved;
     }
 
-    const QStringList serviceTypes {
-        QStringLiteral("_workstation._tcp"),
-        QStringLiteral("_http._tcp"),
-        QStringLiteral("_https._tcp"),
-        QStringLiteral("_ssh._tcp"),
-        QStringLiteral("_smb._tcp"),
-        QStringLiteral("_ipp._tcp"),
-        QStringLiteral("_printer._tcp"),
-        QStringLiteral("_scanner._tcp"),
-        QStringLiteral("_rtsp._tcp"),
-        QStringLiteral("_apple-mobdev2._tcp"),
-        QStringLiteral("_airplay._tcp"),
-        QStringLiteral("_raop._tcp"),
-        QStringLiteral("_companion-link._tcp"),
-        QStringLiteral("_device-info._tcp"),
-        QStringLiteral("_hap._tcp"),
-        QStringLiteral("_sleep-proxy._udp"),
-    };
+    const QStringList serviceTypes = allBonjourServiceTypes();
 
     QList<QFuture<BonjourResolution>> futures;
     futures.reserve(serviceTypes.size());
@@ -1381,7 +1449,7 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
         }
     });
 #ifdef Q_OS_MACOS
-    QTimer::singleShot(250, this, [this, scheduledIps, generation]() {
+    QTimer::singleShot(40, this, [this, scheduledIps, generation]() {
         if (!m_cancelRequested.load() && generation == m_activeGeneration.load()) {
             startBonjourEnrichment(scheduledIps, generation);
         }
@@ -1406,18 +1474,7 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                     return;
                 }
                 QMetaObject::invokeMethod(this, [this, record]() mutable {
-                    if (m_cancelRequested.load() || record.generation != m_activeGeneration.load()) {
-                        return;
-                    }
-                    {
-                        QMutexLocker locker(&m_liveRecordsMutex);
-                        const auto liveIt = m_liveRecords.constFind(record.ip);
-                        if (liveIt != m_liveRecords.constEnd()) {
-                            mergeHelpfulScanFields(record, liveIt.value());
-                        }
-                        m_liveRecords.insert(record.ip, record);
-                    }
-                    emit recordReady(record);
+                    publishLiveRecord(record);
                 }, Qt::QueuedConnection);
             });
         });
@@ -1473,6 +1530,9 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                 }
             }
             emit recordReady(seed);
+            if (needsNameEnrichment(seed)) {
+                startNameEnrichment({seed}, seed.generation);
+            }
         });
     };
 
@@ -1529,6 +1589,9 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
             }
             if (shouldEmit) {
                 emit recordReady(record);
+                if (needsNameEnrichment(record)) {
+                    startNameEnrichment({record}, record.generation);
+                }
             }
         });
     };
@@ -1838,17 +1901,7 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
             && record.status != HostStatus::Offline
             && record.generation == m_activeGeneration.load()) {
             QMetaObject::invokeMethod(this, [this, record]() mutable {
-                if (!m_cancelRequested.load() && record.generation == m_activeGeneration.load()) {
-                    {
-                        QMutexLocker locker(&m_liveRecordsMutex);
-                        const auto liveIt = m_liveRecords.constFind(record.ip);
-                        if (liveIt != m_liveRecords.constEnd()) {
-                            mergeHelpfulScanFields(record, liveIt.value());
-                        }
-                        m_liveRecords.insert(record.ip, record);
-                    }
-                    emit recordReady(record);
-                }
+                publishLiveRecord(record);
             }, Qt::QueuedConnection);
         }
         return record;
@@ -1894,21 +1947,14 @@ void NetworkScanService::startBonjourEnrichment(const QList<QString>& ips, quint
     }
 
     QPointer<NetworkScanService> guard(this);
-    (void)QtConcurrent::run([guard, generation, scannedIps]() {
-        const auto bonjourNames = collectBonjourNames(scannedIps);
-        if (!guard || (bonjourNames.namesByIp.isEmpty() && bonjourNames.namesByMac.isEmpty())) {
+    const auto publishResolution = [guard, generation](const BonjourResolution& bonjourNames) {
+        rememberBonjourResolution(bonjourNames);
+        if (!guard || isEmptyBonjourResolution(bonjourNames)) {
             return;
         }
         QMetaObject::invokeMethod(guard.data(), [guard, generation, bonjourNames]() {
             if (!guard || guard->m_activeGeneration.load() != generation) {
                 return;
-            }
-
-            for (auto it = bonjourNames.namesByMac.constBegin(); it != bonjourNames.namesByMac.constEnd(); ++it) {
-                rememberResolvedName(QString(), it.key(), it.value());
-            }
-            for (auto it = bonjourNames.namesByIp.constBegin(); it != bonjourNames.namesByIp.constEnd(); ++it) {
-                rememberResolvedName(it.key(), QString(), it.value());
             }
 
             QHash<QString, QString> namesByRecordIp = bonjourNames.namesByIp;
@@ -1949,7 +1995,46 @@ void NetworkScanService::startBonjourEnrichment(const QList<QString>& ips, quint
                 emit guard->recordReady(updated);
             }
         }, Qt::QueuedConnection);
-    });
+    };
+
+    const auto launchService = [guard, generation, scannedIps, publishResolution](const QString& serviceType, int delayMs) {
+        if (!guard) {
+            return;
+        }
+        QTimer::singleShot(delayMs, guard.data(), [guard, generation, scannedIps, serviceType, publishResolution]() {
+            if (!guard || guard->m_cancelRequested.load()) {
+                return;
+            }
+            (void)QtConcurrent::run([guard, generation, scannedIps, serviceType, publishResolution]() {
+                if (!guard || guard->m_cancelRequested.load()) {
+                    return;
+                }
+                const auto partial = collectBonjourNamesForService(scannedIps, serviceType);
+                if (isEmptyBonjourResolution(partial)) {
+                    return;
+                }
+                publishResolution(partial);
+            });
+        });
+    };
+
+    int delayMs = 0;
+    for (const auto& serviceType : priorityBonjourServiceTypes()) {
+        launchService(serviceType, delayMs);
+        delayMs += 35;
+    }
+
+    delayMs = 1250;
+    for (const auto& serviceType : priorityBonjourServiceTypes()) {
+        launchService(serviceType, delayMs);
+        delayMs += 50;
+    }
+
+    delayMs = 2300;
+    for (const auto& serviceType : allBonjourServiceTypes()) {
+        launchService(serviceType, delayMs);
+        delayMs += 55;
+    }
 #endif
 }
 
@@ -2255,12 +2340,7 @@ void NetworkScanService::publishLiveRecord(ScanRecord record) {
 
     emit recordReady(record);
 
-    const bool needsName = isUnknownVendorLabel(record.hostName)
-        && (record.status == HostStatus::Online
-            || !isUnknownVendorLabel(record.webDetect)
-            || !isUnknownVendorLabel(record.portsDisplay)
-            || (!record.mac.trimmed().isEmpty() && record.mac != QStringLiteral("-")));
-    if (needsName) {
+    if (needsNameEnrichment(record)) {
         startNameEnrichment({record}, record.generation);
     }
 }
