@@ -4,6 +4,7 @@
 #include "core/VendorDbService.h"
 
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QHash>
 #include <QHostAddress>
@@ -1072,6 +1073,332 @@ QString prettyBonjourName(const QString& serviceType, const QString& instanceNam
     return normalizeResolvedName(display, QString());
 }
 
+void appendDnsU16(QByteArray& packet, quint16 value) {
+    packet.append(static_cast<char>((value >> 8) & 0xff));
+    packet.append(static_cast<char>(value & 0xff));
+}
+
+quint16 readDnsU16(const QByteArray& packet, int offset) {
+    if (offset < 0 || offset + 2 > packet.size()) {
+        return 0;
+    }
+    return static_cast<quint16>((static_cast<quint8>(packet.at(offset)) << 8)
+                                | static_cast<quint8>(packet.at(offset + 1)));
+}
+
+QByteArray encodeDnsName(QString name) {
+    name = name.trimmed();
+    while (name.endsWith(QLatin1Char('.'))) {
+        name.chop(1);
+    }
+
+    QByteArray encoded;
+    const QStringList labels = name.split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    for (const auto& label : labels) {
+        const QByteArray bytes = label.toUtf8();
+        if (bytes.isEmpty()) {
+            continue;
+        }
+        encoded.append(static_cast<char>(qMin(bytes.size(), 63)));
+        encoded.append(bytes.constData(), qMin(bytes.size(), 63));
+    }
+    encoded.append('\0');
+    return encoded;
+}
+
+QString decodeDnsName(const QByteArray& packet, int& offset) {
+    QStringList labels;
+    int cursor = offset;
+    bool jumped = false;
+    int jumps = 0;
+
+    while (cursor >= 0 && cursor < packet.size() && jumps < 16) {
+        const quint8 length = static_cast<quint8>(packet.at(cursor));
+        if (length == 0) {
+            if (!jumped) {
+                offset = cursor + 1;
+            }
+            return labels.join(QLatin1Char('.'));
+        }
+
+        if ((length & 0xc0) == 0xc0) {
+            if (cursor + 1 >= packet.size()) {
+                return {};
+            }
+            const int pointer = ((length & 0x3f) << 8) | static_cast<quint8>(packet.at(cursor + 1));
+            if (!jumped) {
+                offset = cursor + 2;
+            }
+            cursor = pointer;
+            jumped = true;
+            ++jumps;
+            continue;
+        }
+
+        if ((length & 0xc0) != 0 || cursor + 1 + length > packet.size()) {
+            return {};
+        }
+        labels.append(QString::fromUtf8(packet.constData() + cursor + 1, length));
+        cursor += 1 + length;
+        if (!jumped) {
+            offset = cursor;
+        }
+    }
+    return {};
+}
+
+QByteArray buildMdnsPtrQuery(const QString& name) {
+    QByteArray packet;
+    packet.reserve(64 + name.size());
+    appendDnsU16(packet, 0);
+    appendDnsU16(packet, 0);
+    appendDnsU16(packet, 1);
+    appendDnsU16(packet, 0);
+    appendDnsU16(packet, 0);
+    appendDnsU16(packet, 0);
+    packet.append(encodeDnsName(name));
+    appendDnsU16(packet, 12);
+    appendDnsU16(packet, 0x8001);
+    return packet;
+}
+
+QString serviceTypeFromDnsName(QString name) {
+    name = name.trimmed();
+    while (name.endsWith(QLatin1Char('.'))) {
+        name.chop(1);
+    }
+    const QStringList labels = name.split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    if (labels.size() < 2
+        || !labels.at(0).startsWith(QLatin1Char('_'))
+        || (labels.at(1) != QStringLiteral("_tcp") && labels.at(1) != QStringLiteral("_udp"))) {
+        return {};
+    }
+    return labels.at(0) + QLatin1Char('.') + labels.at(1);
+}
+
+QString instanceNameFromServiceName(QString fullName, const QString& serviceType) {
+    fullName = fullName.trimmed();
+    while (fullName.endsWith(QLatin1Char('.'))) {
+        fullName.chop(1);
+    }
+    const QString suffix = QLatin1Char('.') + serviceType + QStringLiteral(".local");
+    if (fullName.endsWith(suffix, Qt::CaseInsensitive)) {
+        fullName.chop(suffix.size());
+    }
+    return fullName.trimmed();
+}
+
+QString reverseMdnsNameForIp(const QString& ip) {
+    const QStringList parts = ip.split(QLatin1Char('.'));
+    if (parts.size() != 4) {
+        return {};
+    }
+    return QStringLiteral("%1.%2.%3.%4.in-addr.arpa")
+        .arg(parts.at(3), parts.at(2), parts.at(1), parts.at(0));
+}
+
+QString ipFromReverseMdnsName(QString name) {
+    name = name.trimmed().toLower();
+    while (name.endsWith(QLatin1Char('.'))) {
+        name.chop(1);
+    }
+    const QString suffix = QStringLiteral(".in-addr.arpa");
+    if (!name.endsWith(suffix)) {
+        return {};
+    }
+    name.chop(suffix.size());
+    const QStringList parts = name.split(QLatin1Char('.'), Qt::SkipEmptyParts);
+    if (parts.size() != 4) {
+        return {};
+    }
+    const QString ip = QStringLiteral("%1.%2.%3.%4").arg(parts.at(3), parts.at(2), parts.at(1), parts.at(0));
+    return QHostAddress(ip).protocol() == QAbstractSocket::IPv4Protocol ? ip : QString();
+}
+
+QList<QString> sortedIpsForMdnsReverse(const QSet<QString>& scannedIps, int limit) {
+    QList<QString> ips(scannedIps.constBegin(), scannedIps.constEnd());
+    std::sort(ips.begin(), ips.end(), [](const QString& left, const QString& right) {
+        return QHostAddress(left).toIPv4Address() < QHostAddress(right).toIPv4Address();
+    });
+    if (ips.size() > limit) {
+        ips = ips.mid(0, limit);
+    }
+    return ips;
+}
+
+void parseMdnsPacketIntoResolution(const QByteArray& packet, const QSet<QString>& scannedIps, BonjourResolution& resolved) {
+    if (packet.size() < 12) {
+        return;
+    }
+
+    int offset = 12;
+    const quint16 questionCount = readDnsU16(packet, 4);
+    const quint16 answerCount = readDnsU16(packet, 6);
+    const quint16 authorityCount = readDnsU16(packet, 8);
+    const quint16 additionalCount = readDnsU16(packet, 10);
+    for (quint16 index = 0; index < questionCount; ++index) {
+        decodeDnsName(packet, offset);
+        offset += 4;
+        if (offset > packet.size()) {
+            return;
+        }
+    }
+
+    QHash<QString, QString> serviceByInstance;
+    QHash<QString, QString> instanceByFullName;
+    QHash<QString, QString> targetByInstance;
+    QHash<QString, QStringList> ipsByHost;
+    const int recordCount = answerCount + authorityCount + additionalCount;
+    for (int index = 0; index < recordCount; ++index) {
+        const QString recordName = decodeDnsName(packet, offset);
+        if (recordName.isEmpty() || offset + 10 > packet.size()) {
+            return;
+        }
+
+        const quint16 type = readDnsU16(packet, offset);
+        offset += 2;
+        offset += 2;
+        offset += 4;
+        const quint16 dataLength = readDnsU16(packet, offset);
+        offset += 2;
+        if (offset + dataLength > packet.size()) {
+            return;
+        }
+
+        const int dataOffset = offset;
+        if (type == 12) {
+            int nameOffset = dataOffset;
+            const QString pointerName = decodeDnsName(packet, nameOffset);
+            const QString reverseIp = ipFromReverseMdnsName(recordName);
+            if (!reverseIp.isEmpty() && scannedIps.contains(reverseIp)) {
+                const QString normalized = normalizeResolvedName(pointerName, reverseIp);
+                if (!normalized.isEmpty() && !resolved.namesByIp.contains(reverseIp)) {
+                    resolved.namesByIp.insert(reverseIp, normalized);
+                }
+            } else {
+                const QString serviceType = serviceTypeFromDnsName(recordName);
+                if (!serviceType.isEmpty()) {
+                    const QString key = pointerName.toLower();
+                    serviceByInstance.insert(key, serviceType);
+                    instanceByFullName.insert(key, instanceNameFromServiceName(pointerName, serviceType));
+                }
+            }
+        } else if (type == 33 && dataLength >= 7) {
+            int targetOffset = dataOffset + 6;
+            const QString targetHost = decodeDnsName(packet, targetOffset);
+            if (!targetHost.isEmpty()) {
+                targetByInstance.insert(recordName.toLower(), targetHost);
+            }
+        } else if (type == 1 && dataLength == 4) {
+            const QString ip = QStringLiteral("%1.%2.%3.%4")
+                .arg(static_cast<quint8>(packet.at(dataOffset)))
+                .arg(static_cast<quint8>(packet.at(dataOffset + 1)))
+                .arg(static_cast<quint8>(packet.at(dataOffset + 2)))
+                .arg(static_cast<quint8>(packet.at(dataOffset + 3)));
+            if (scannedIps.contains(ip)) {
+                ipsByHost[recordName.toLower()].append(ip);
+            }
+        }
+
+        offset += dataLength;
+    }
+
+    for (auto it = serviceByInstance.constBegin(); it != serviceByInstance.constEnd(); ++it) {
+        const QString key = it.key();
+        const QString serviceType = it.value();
+        const QString instanceName = instanceByFullName.value(key);
+        const QString targetHost = targetByInstance.value(key);
+        const QString displayName = prettyBonjourName(serviceType, instanceName, targetHost);
+        if (displayName.isEmpty()) {
+            continue;
+        }
+
+        const QString instanceMac = extractBonjourInstanceMac(instanceName);
+        if (!instanceMac.isEmpty() && !resolved.namesByMac.contains(instanceMac)) {
+            resolved.namesByMac.insert(instanceMac, displayName);
+        }
+
+        const auto targetIps = ipsByHost.value(targetHost.toLower());
+        for (const auto& ip : targetIps) {
+            if (!resolved.namesByIp.contains(ip)) {
+                resolved.namesByIp.insert(ip, displayName);
+            }
+        }
+    }
+}
+
+BonjourResolution collectMdnsNamesWithSocket(const QSet<QString>& scannedIps,
+                                             const QStringList& serviceTypes,
+                                             const QString& adapterId,
+                                             int timeoutMs) {
+    BonjourResolution resolved;
+    if (scannedIps.isEmpty()) {
+        return resolved;
+    }
+
+    QUdpSocket socket;
+    const QHostAddress mdnsGroup(QStringLiteral("224.0.0.251"));
+    const auto bindFlags = QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint;
+    bool boundToMdnsPort = socket.bind(QHostAddress::AnyIPv4, 5353, bindFlags);
+    if (!boundToMdnsPort && !socket.bind(QHostAddress::AnyIPv4, 0, bindFlags)) {
+        return resolved;
+    }
+
+    const QNetworkInterface iface = QNetworkInterface::interfaceFromName(adapterId);
+    if (iface.isValid()) {
+        socket.setMulticastInterface(iface);
+        if (boundToMdnsPort) {
+            socket.joinMulticastGroup(mdnsGroup, iface);
+        }
+    } else if (boundToMdnsPort) {
+        socket.joinMulticastGroup(mdnsGroup);
+    }
+    socket.setSocketOption(QAbstractSocket::MulticastTtlOption, 255);
+
+    QList<QByteArray> queries;
+    queries.reserve(serviceTypes.size() + qMin(scannedIps.size(), 384));
+    for (const auto& serviceType : serviceTypes) {
+        queries.append(buildMdnsPtrQuery(serviceType + QStringLiteral(".local")));
+    }
+    for (const auto& ip : sortedIpsForMdnsReverse(scannedIps, 384)) {
+        const QString reverseName = reverseMdnsNameForIp(ip);
+        if (!reverseName.isEmpty()) {
+            queries.append(buildMdnsPtrQuery(reverseName));
+        }
+    }
+
+    const auto sendQueries = [&]() {
+        for (int index = 0; index < queries.size(); ++index) {
+            socket.writeDatagram(queries.at(index), mdnsGroup, 5353);
+            if ((index + 1) % 64 == 0) {
+                QThread::msleep(2);
+            }
+        }
+    };
+
+    QElapsedTimer timer;
+    timer.start();
+    sendQueries();
+    bool sentRefresh = false;
+    while (timer.elapsed() < timeoutMs) {
+        if (!sentRefresh && timer.elapsed() > 350) {
+            sendQueries();
+            sentRefresh = true;
+        }
+        const int remaining = qMax(1, timeoutMs - static_cast<int>(timer.elapsed()));
+        if (!socket.waitForReadyRead(qMin(80, remaining))) {
+            continue;
+        }
+        while (socket.hasPendingDatagrams()) {
+            QByteArray datagram;
+            datagram.resize(static_cast<int>(socket.pendingDatagramSize()));
+            socket.readDatagram(datagram.data(), datagram.size());
+            parseMdnsPacketIntoResolution(datagram, scannedIps, resolved);
+        }
+    }
+    return resolved;
+}
+
 BonjourResolution collectBonjourNamesForService(const QSet<QString>& scannedIps, const QString& serviceType) {
     BonjourResolution resolved;
     if (scannedIps.isEmpty()) {
@@ -1947,6 +2274,7 @@ void NetworkScanService::startBonjourEnrichment(const QList<QString>& ips, quint
     }
 
     QPointer<NetworkScanService> guard(this);
+    const QString adapterId = m_activeAdapter.id;
     const auto publishResolution = [guard, generation](const BonjourResolution& bonjourNames) {
         rememberBonjourResolution(bonjourNames);
         if (!guard || isEmptyBonjourResolution(bonjourNames)) {
@@ -1996,6 +2324,31 @@ void NetworkScanService::startBonjourEnrichment(const QList<QString>& ips, quint
             }
         }, Qt::QueuedConnection);
     };
+
+    (void)QtConcurrent::run([guard, generation, scannedIps, adapterId, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load()) {
+            return;
+        }
+        const auto quickNames = collectMdnsNamesWithSocket(scannedIps, priorityBonjourServiceTypes(), adapterId, 1150);
+        if (!isEmptyBonjourResolution(quickNames)) {
+            publishResolution(quickNames);
+        }
+    });
+
+    QTimer::singleShot(1450, this, [guard, generation, scannedIps, adapterId, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load()) {
+            return;
+        }
+        (void)QtConcurrent::run([guard, generation, scannedIps, adapterId, publishResolution]() {
+            if (!guard || guard->m_cancelRequested.load()) {
+                return;
+            }
+            const auto broadNames = collectMdnsNamesWithSocket(scannedIps, allBonjourServiceTypes(), adapterId, 1700);
+            if (!isEmptyBonjourResolution(broadNames)) {
+                publishResolution(broadNames);
+            }
+        });
+    });
 
     const auto launchService = [guard, generation, scannedIps, publishResolution](const QString& serviceType, int delayMs) {
         if (!guard) {
