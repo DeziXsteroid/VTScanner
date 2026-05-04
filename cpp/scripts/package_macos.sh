@@ -32,6 +32,8 @@ SEED_PATH="$SEED_DIR/manuf"
 BIN_DIR="$RESOURCES_DIR/bin"
 MANUF_URL="https://www.wireshark.org/download/automated/data/manuf"
 FPING_SOURCE="/usr/bin/fping"
+DEPLOY_LIB_DIR="$DIST_DIR/lib"
+QT_PDF_SEARCH_LINK="$DEPLOY_LIB_DIR/QtPdf.framework"
 
 TEMP_DMG=""
 MOUNT_DEVICE=""
@@ -76,6 +78,25 @@ bundle_extra_runtime_deps() {
   mkdir -p "$FRAMEWORKS_DIR"
   copy_optional_dependency "$BREW_PREFIX/lib/libgraphite2.3.dylib" "$FRAMEWORKS_DIR"
   copy_optional_dependency "$BREW_PREFIX/lib/libdbus-1.3.dylib" "$FRAMEWORKS_DIR"
+}
+
+prepare_deploy_search_paths() {
+  local qt_pdf_source=""
+  if [[ -d "$BREW_PREFIX/lib/QtPdf.framework" ]]; then
+    qt_pdf_source="$BREW_PREFIX/lib/QtPdf.framework"
+  elif [[ -d "$BREW_PREFIX/Frameworks/QtPdf.framework" ]]; then
+    qt_pdf_source="$BREW_PREFIX/Frameworks/QtPdf.framework"
+  elif [[ -d "$QT_PREFIX/lib/QtPdf.framework" ]]; then
+    qt_pdf_source="$QT_PREFIX/lib/QtPdf.framework"
+  elif [[ -d "$QT_PREFIX/Frameworks/QtPdf.framework" ]]; then
+    qt_pdf_source="$QT_PREFIX/Frameworks/QtPdf.framework"
+  fi
+
+  if [[ -n "$qt_pdf_source" ]]; then
+    mkdir -p "$DEPLOY_LIB_DIR"
+    rm -f "$QT_PDF_SEARCH_LINK"
+    ln -s "$qt_pdf_source" "$QT_PDF_SEARCH_LINK"
+  fi
 }
 
 configure_dmg_finder_window() {
@@ -161,6 +182,8 @@ fi
 
 rm -rf "$APP_PATH"
 cp -R "$BUILD_APP_PATH" "$APP_PATH"
+
+prepare_deploy_search_paths
 
 macdeployqt "$APP_PATH" \
   -always-overwrite \

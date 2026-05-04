@@ -109,8 +109,8 @@ Windows:
 
 macOS:
 
-- DMG containing `Install Network Tools 1.0.app`
-- installed app path `/Applications/Network Tools 1.0.app`
+- DMG containing `Install Network Tools 1.0.8.app`
+- installed app path `/Applications/Network Tools 1.0.8.app`
 - interactive installer prompts for language, destination folder and desktop shortcut
 - seeded `~/Library/Application Support/NetWorkTools/data/manuf`
 
@@ -139,7 +139,7 @@ Run on macOS/Linux from build output:
 If CMake generates an app bundle on macOS, run:
 
 ```bash
-open "/Applications/Network Tools 1.0.app"
+open "/Applications/Network Tools 1.0.8.app"
 ```
 
 ## Packaging commands
