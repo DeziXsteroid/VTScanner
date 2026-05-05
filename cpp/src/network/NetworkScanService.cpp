@@ -20,15 +20,15 @@
 #include <QThread>
 #include <QThreadPool>
 #include <QTimer>
+#include <QTcpSocket>
 #include <QUdpSocket>
+#include <QUrl>
 #include <QtConcurrent>
 
 #include <algorithm>
 #include <array>
 
-#ifdef Q_OS_WIN
-#include <QTcpSocket>
-#else
+#ifndef Q_OS_WIN
 #include <arpa/inet.h>
 #include <cstdio>
 #include <cerrno>
@@ -76,6 +76,7 @@ QString systemCommandPath(const QString& program) {
     if (program == QStringLiteral("ping")) return QStringLiteral("/sbin/ping");
     if (program == QStringLiteral("arp")) return QStringLiteral("/usr/sbin/arp");
     if (program == QStringLiteral("netstat")) return QStringLiteral("/usr/sbin/netstat");
+    if (program == QStringLiteral("route")) return QStringLiteral("/sbin/route");
     if (program == QStringLiteral("dns-sd")) return QStringLiteral("/usr/bin/dns-sd");
     if (program == QStringLiteral("dscacheutil")) return QStringLiteral("/usr/bin/dscacheutil");
     if (program == QStringLiteral("ssh")) return QStringLiteral("/usr/bin/ssh");
@@ -184,6 +185,32 @@ QString executableCommandPath(const QString& program) {
 QString normalizeMacString(QString value) {
     value = value.trimmed().toLower();
     value.replace(QLatin1Char('-'), QLatin1Char(':'));
+    const auto finalize = [](const QString& normalized) {
+        const QStringList parts = normalized.split(QLatin1Char(':'), Qt::SkipEmptyParts);
+        if (parts.size() != 6) {
+            return QStringLiteral("-");
+        }
+        bool ok = false;
+        const int firstOctet = parts.first().toInt(&ok, 16);
+        if (!ok || (firstOctet & 0x01) != 0) {
+            return QStringLiteral("-");
+        }
+        bool allZero = true;
+        bool allBroadcast = true;
+        for (const auto& part : parts) {
+            const int value = part.toInt(&ok, 16);
+            if (!ok) {
+                return QStringLiteral("-");
+            }
+            allZero = allZero && value == 0x00;
+            allBroadcast = allBroadcast && value == 0xff;
+        }
+        if (allZero || allBroadcast) {
+            return QStringLiteral("-");
+        }
+        return normalized;
+    };
+
     if (value.contains(QLatin1Char('.'))) {
         QString hex = value;
         hex.remove(QLatin1Char('.'));
@@ -194,7 +221,7 @@ QString normalizeMacString(QString value) {
         for (int index = 0; index < hex.size(); index += 2) {
             parts.append(hex.mid(index, 2));
         }
-        return parts.join(QLatin1Char(':'));
+        return finalize(parts.join(QLatin1Char(':')));
     }
 
     const QStringList rawParts = value.split(QLatin1Char(':'), Qt::SkipEmptyParts);
@@ -207,7 +234,7 @@ QString normalizeMacString(QString value) {
             }
             parts.append(part.rightJustified(2, QLatin1Char('0')));
         }
-        return parts.join(QLatin1Char(':'));
+        return finalize(parts.join(QLatin1Char(':')));
     }
 
     QString hex = value;
@@ -219,7 +246,34 @@ QString normalizeMacString(QString value) {
     for (int index = 0; index < hex.size(); index += 2) {
         parts.append(hex.mid(index, 2));
     }
-    return parts.join(QLatin1Char(':'));
+    return finalize(parts.join(QLatin1Char(':')));
+}
+
+QString normalizeGatewayIp(QString value) {
+    value = value.trimmed();
+    const auto address = QHostAddress(value);
+    if (address.protocol() != QAbstractSocket::IPv4Protocol) {
+        return QStringLiteral("-");
+    }
+
+    const quint32 ip = address.toIPv4Address();
+    const quint8 first = static_cast<quint8>((ip >> 24) & 0xff);
+    const quint8 last = static_cast<quint8>(ip & 0xff);
+    if (ip == 0
+        || ip == 0xffffffffu
+        || first == 0
+        || first == 127
+        || first >= 224
+        || (first == 169 && static_cast<quint8>((ip >> 16) & 0xff) == 254)
+        || last == 0
+        || last == 255) {
+        return QStringLiteral("-");
+    }
+    return address.toString();
+}
+
+bool isValidGatewayIp(const QString& value) {
+    return normalizeGatewayIp(value) != QStringLiteral("-");
 }
 
 QString normalizeResolvedName(QString value, const QString& ip) {
@@ -265,7 +319,10 @@ void mergeHelpfulScanFields(ScanRecord& target, const ScanRecord& source) {
     if ((target.mac.trimmed().isEmpty() || target.mac == QStringLiteral("-"))
         && !source.mac.trimmed().isEmpty()
         && source.mac != QStringLiteral("-")) {
-        target.mac = source.mac;
+        const QString mac = normalizeMacString(source.mac);
+        if (mac != QStringLiteral("-")) {
+            target.mac = mac;
+        }
     }
 
     if (isMissingPingDisplay(target.pingDisplay) && !isMissingPingDisplay(source.pingDisplay)) {
@@ -312,7 +369,10 @@ void mergeHelpfulScanFields(ScanRecord& target, const ScanRecord& source) {
     if ((target.gateway.trimmed().isEmpty() || target.gateway == QStringLiteral("-"))
         && !source.gateway.trimmed().isEmpty()
         && source.gateway != QStringLiteral("-")) {
-        target.gateway = source.gateway;
+        const QString gateway = normalizeGatewayIp(source.gateway);
+        if (gateway != QStringLiteral("-")) {
+            target.gateway = gateway;
+        }
     }
     if ((target.mask.trimmed().isEmpty() || target.mask == QStringLiteral("-"))
         && !source.mask.trimmed().isEmpty()
@@ -336,15 +396,41 @@ bool needsNameEnrichment(const ScanRecord& record) {
             || (!record.mac.trimmed().isEmpty() && record.mac != QStringLiteral("-")));
 }
 
+bool needsDetailEnrichment(const ScanRecord& record) {
+    if (record.ip.trimmed().isEmpty() || record.status == HostStatus::Offline) {
+        return false;
+    }
+    return isMissingPingDisplay(record.pingDisplay)
+        || record.port.trimmed().isEmpty()
+        || record.port == QStringLiteral("-")
+        || record.port == QStringLiteral("[n/a]")
+        || record.portsDisplay.trimmed().isEmpty()
+        || record.portsDisplay == QStringLiteral("-")
+        || record.portsDisplay == QStringLiteral("[n/a]")
+        || isUnknownVendorLabel(record.webDetect)
+        || isUnknownVendorLabel(record.typeHint)
+        || record.typeHint == QStringLiteral("icmp")
+        || record.typeHint == QStringLiteral("udp")
+        || record.typeHint == QStringLiteral("arp")
+        || record.typeHint == QStringLiteral("mdns")
+        || record.typeHint == QStringLiteral("ssdp")
+        || record.mac.trimmed().isEmpty()
+        || record.mac == QStringLiteral("-")
+        || isUnknownVendorLabel(record.hostName)
+        || record.gateway.trimmed().isEmpty()
+        || record.gateway == QStringLiteral("-")
+        || record.gateway == QStringLiteral("[n/a]");
+}
+
 int quickPingTimeoutForProfile(const QString& profile) {
     const QString normalized = profile.trimmed().toLower();
     if (normalized == QStringLiteral("fast")) {
-        return 220;
+        return 280;
     }
     if (normalized == QStringLiteral("reliable")) {
-        return 420;
+        return 520;
     }
-    return 300;
+    return 360;
 }
 
 int quickPortTimeoutForProfile(const QString& profile) {
@@ -361,12 +447,12 @@ int quickPortTimeoutForProfile(const QString& profile) {
 int instantProbeLimitForProfile(const QString& profile) {
     const QString normalized = profile.trimmed().toLower();
     if (normalized == QStringLiteral("fast")) {
-        return 28;
+        return 44;
     }
     if (normalized == QStringLiteral("reliable")) {
-        return 12;
+        return 20;
     }
-    return 20;
+    return 32;
 }
 
 struct CachedResolvedName {
@@ -377,10 +463,26 @@ struct CachedResolvedName {
 struct BonjourResolution {
     QHash<QString, QString> namesByIp;
     QHash<QString, QString> namesByMac;
+    QSet<QString> activeIps;
 };
 
 bool isEmptyBonjourResolution(const BonjourResolution& resolution) {
     return resolution.namesByIp.isEmpty() && resolution.namesByMac.isEmpty();
+}
+
+struct SsdpResolution {
+    QHash<QString, QString> namesByIp;
+    QHash<QString, QString> typesByIp;
+    QHash<QString, QString> webByIp;
+    QHash<QString, QString> portsByIp;
+    QSet<QString> activeIps;
+};
+
+bool isEmptySsdpResolution(const SsdpResolution& resolution) {
+    return resolution.activeIps.isEmpty()
+        && resolution.namesByIp.isEmpty()
+        && resolution.typesByIp.isEmpty()
+        && resolution.webByIp.isEmpty();
 }
 
 struct ScanTiming {
@@ -409,34 +511,46 @@ QString normalizedScanProfile(QString profile) {
 ScanTiming scanTimingForProfile(const QString& profile) {
     const QString normalized = normalizedScanProfile(profile);
     if (normalized == QStringLiteral("fast")) {
-        return ScanTiming{350, 1800, 180, 220, 180, 1};
+        return ScanTiming{450, 2400, 220, 240, 220, 1};
     }
     if (normalized == QStringLiteral("reliable")) {
-        return ScanTiming{1200, 5200, 300, 560, 500, 5};
+        return ScanTiming{1300, 5600, 320, 600, 560, 5};
     }
-    return ScanTiming{650, 3200, 240, 360, 300, 2};
+    return ScanTiming{800, 3800, 260, 390, 360, 2};
 }
 
 QList<quint16> probePortsForProfile(const QString& profile) {
     const QString normalized = normalizedScanProfile(profile);
     if (normalized == QStringLiteral("fast")) {
-        return {22, 23, 80, 443, 554, 8080};
+        return {22, 23, 80, 443, 445, 548, 554, 8080, 62078};
     }
     if (normalized == QStringLiteral("reliable")) {
-        return {22, 23, 80, 443, 554, 3389, 8080, 8443, 9100};
+        return {22, 23, 80, 443, 445, 548, 554, 3389, 5000, 5001, 7000, 8080, 8443, 9100, 62078};
     }
-    return {22, 23, 80, 443, 554, 3389, 8080, 8443, 9100};
+    return {22, 23, 80, 443, 445, 548, 554, 3389, 5000, 5001, 7000, 8080, 8443, 9100, 62078};
 }
 
 int workerCountForProfile(int requestedWorkers, const QString& profile) {
     const QString normalized = normalizedScanProfile(profile);
     if (normalized == QStringLiteral("fast")) {
-        return qBound(8, requestedWorkers, 128);
+        return qBound(8, requestedWorkers, 64);
     }
     if (normalized == QStringLiteral("reliable")) {
-        return qBound(2, requestedWorkers, 48);
+        return qBound(2, requestedWorkers, 24);
     }
-    return qBound(4, requestedWorkers, 96);
+    return qBound(4, requestedWorkers, 48);
+}
+
+int enrichmentWorkerCountForProfile(const QString& profile) {
+    const int ideal = qMax(4, QThread::idealThreadCount());
+    const QString normalized = normalizedScanProfile(profile);
+    if (normalized == QStringLiteral("fast")) {
+        return qBound(6, ideal * 2, 16);
+    }
+    if (normalized == QStringLiteral("reliable")) {
+        return qBound(3, ideal, 8);
+    }
+    return qBound(4, ideal + 2, 12);
 }
 
 ArpWarmupConfig arpWarmupForProfile(const QString& profile) {
@@ -843,6 +957,15 @@ QString detectTypeHint(const QStringList& openPorts, bool pingSuccess, bool onLi
     if (hasPort(QStringLiteral("554"))) {
         return QStringLiteral("rtsp");
     }
+    if (hasPort(QStringLiteral("445")) || hasPort(QStringLiteral("139"))) {
+        return QStringLiteral("smb");
+    }
+    if (hasPort(QStringLiteral("548")) || hasPort(QStringLiteral("62078"))) {
+        return QStringLiteral("apple");
+    }
+    if (hasPort(QStringLiteral("5000")) || hasPort(QStringLiteral("5001")) || hasPort(QStringLiteral("7000"))) {
+        return QStringLiteral("media");
+    }
     if (hasPort(QStringLiteral("443")) || hasPort(QStringLiteral("8443")) || hasPort(QStringLiteral("80")) || hasPort(QStringLiteral("8080"))) {
         return QStringLiteral("web");
     }
@@ -1037,6 +1160,219 @@ QStringList resolveMdnsIpv4(const QString& hostName) {
 #else
     return ips;
 #endif
+}
+
+QString ssdpHeaderValue(const QString& message, const QString& key) {
+    const QString prefix = key + QLatin1Char(':');
+    for (const auto& rawLine : message.split(QLatin1Char('\n'))) {
+        const QString line = rawLine.trimmed();
+        if (line.startsWith(prefix, Qt::CaseInsensitive)) {
+            return line.mid(prefix.size()).trimmed();
+        }
+    }
+    return {};
+}
+
+QString xmlTagValue(const QString& xml, const QString& tagName) {
+    const QRegularExpression re(
+        QStringLiteral("<\\s*%1\\s*>\\s*([^<]+)\\s*<\\s*/\\s*%1\\s*>")
+            .arg(QRegularExpression::escape(tagName)),
+        QRegularExpression::CaseInsensitiveOption
+    );
+    const auto match = re.match(xml);
+    if (!match.hasMatch()) {
+        return {};
+    }
+    QString value = match.captured(1).trimmed();
+    value.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    value.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    value.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    value.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+    value.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
+    return value;
+}
+
+QString fetchHttpText(const QUrl& url, int timeoutMs) {
+    if (!url.isValid() || url.scheme().compare(QStringLiteral("http"), Qt::CaseInsensitive) != 0 || url.host().trimmed().isEmpty()) {
+        return {};
+    }
+
+    QTcpSocket socket;
+    const int boundedTimeout = qBound(350, timeoutMs, 1600);
+    socket.connectToHost(url.host(), static_cast<quint16>(url.port(80)));
+    if (!socket.waitForConnected(boundedTimeout)) {
+        return {};
+    }
+
+    QString path = url.path(QUrl::FullyEncoded);
+    if (path.isEmpty()) {
+        path = QStringLiteral("/");
+    }
+    const QString query = url.query(QUrl::FullyEncoded);
+    if (!query.isEmpty()) {
+        path += QLatin1Char('?') + query;
+    }
+
+    QByteArray request;
+    request += "GET ";
+    request += path.toUtf8();
+    request += " HTTP/1.0\r\nHost: ";
+    request += url.host().toUtf8();
+    request += "\r\nUser-Agent: NetworkToolsQt/1.0.7\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+    socket.write(request);
+    if (!socket.waitForBytesWritten(boundedTimeout)) {
+        return {};
+    }
+
+    QByteArray response;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < boundedTimeout && response.size() < 96 * 1024) {
+        if (!socket.waitForReadyRead(qMin(120, boundedTimeout - static_cast<int>(timer.elapsed())))) {
+            if (socket.state() == QAbstractSocket::UnconnectedState) {
+                break;
+            }
+            continue;
+        }
+        response += socket.readAll();
+    }
+    if (response.isEmpty()) {
+        return {};
+    }
+
+    int bodyOffset = response.indexOf("\r\n\r\n");
+    int separatorLength = 4;
+    if (bodyOffset < 0) {
+        bodyOffset = response.indexOf("\n\n");
+        separatorLength = 2;
+    }
+    if (bodyOffset >= 0) {
+        response = response.mid(bodyOffset + separatorLength);
+    }
+    return QString::fromUtf8(response);
+}
+
+QString ssdpTypeFromText(const QString& text) {
+    const QString lower = text.toLower();
+    if (lower.contains(QStringLiteral("internetgatewaydevice")) || lower.contains(QStringLiteral("wandevice"))) {
+        return QStringLiteral("gateway");
+    }
+    if (lower.contains(QStringLiteral("printer")) || lower.contains(QStringLiteral("printbasic"))) {
+        return QStringLiteral("printer");
+    }
+    if (lower.contains(QStringLiteral("camera")) || lower.contains(QStringLiteral("mediarenderer")) || lower.contains(QStringLiteral("rtsp"))) {
+        return QStringLiteral("media");
+    }
+    if (lower.contains(QStringLiteral("mediaserver")) || lower.contains(QStringLiteral("dlna"))) {
+        return QStringLiteral("media");
+    }
+    return QStringLiteral("upnp");
+}
+
+QString ssdpNameFromDescription(const QString& description, const QString& ip) {
+    QString name = xmlTagValue(description, QStringLiteral("friendlyName"));
+    if (name.isEmpty()) {
+        const QString manufacturer = xmlTagValue(description, QStringLiteral("manufacturer"));
+        const QString model = xmlTagValue(description, QStringLiteral("modelName"));
+        name = QStringList{manufacturer, model}.join(QLatin1Char(' ')).simplified();
+    }
+    return normalizeResolvedName(name, ip);
+}
+
+SsdpResolution collectSsdpDevices(const QSet<QString>& scannedIps, const QString& adapterId, int timeoutMs) {
+    SsdpResolution resolved;
+    if (scannedIps.isEmpty()) {
+        return resolved;
+    }
+
+    QUdpSocket socket;
+    if (!socket.bind(QHostAddress::AnyIPv4, 0, QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint)) {
+        return resolved;
+    }
+
+    const QNetworkInterface iface = QNetworkInterface::interfaceFromName(adapterId);
+    if (iface.isValid()) {
+        socket.setMulticastInterface(iface);
+    }
+    socket.setSocketOption(QAbstractSocket::MulticastTtlOption, 2);
+
+    const QHostAddress ssdpGroup(QStringLiteral("239.255.255.250"));
+    const QByteArray query =
+        "M-SEARCH * HTTP/1.1\r\n"
+        "HOST: 239.255.255.250:1900\r\n"
+        "MAN: \"ssdp:discover\"\r\n"
+        "MX: 1\r\n"
+        "ST: ssdp:all\r\n"
+        "\r\n";
+
+    QHash<QString, QString> rawByIp;
+    QHash<QString, QString> locationByIp;
+    const auto sendQuery = [&]() {
+        socket.writeDatagram(query, ssdpGroup, 1900);
+    };
+
+    QElapsedTimer timer;
+    timer.start();
+    sendQuery();
+    bool sentRefresh = false;
+    while (timer.elapsed() < timeoutMs) {
+        if (!sentRefresh && timer.elapsed() > 650) {
+            sendQuery();
+            sentRefresh = true;
+        }
+        const int remaining = qMax(1, timeoutMs - static_cast<int>(timer.elapsed()));
+        if (!socket.waitForReadyRead(qMin(100, remaining))) {
+            continue;
+        }
+
+        while (socket.hasPendingDatagrams()) {
+            QByteArray datagram;
+            datagram.resize(static_cast<int>(socket.pendingDatagramSize()));
+            QHostAddress sender;
+            socket.readDatagram(datagram.data(), datagram.size(), &sender);
+            const QString ip = sender.toString();
+            if (!scannedIps.contains(ip)) {
+                continue;
+            }
+            const QString message = QString::fromUtf8(datagram);
+            resolved.activeIps.insert(ip);
+            rawByIp.insert(ip, message);
+            const QString location = ssdpHeaderValue(message, QStringLiteral("LOCATION"));
+            if (!location.isEmpty() && !locationByIp.contains(ip)) {
+                locationByIp.insert(ip, location);
+                resolved.webByIp.insert(ip, location);
+                const QUrl url(location);
+                if (url.isValid() && !url.host().isEmpty()) {
+                    const int port = url.port(url.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0 ? 443 : 80);
+                    if (port > 0) {
+                        resolved.portsByIp.insert(ip, QString::number(port));
+                    }
+                }
+            }
+        }
+    }
+
+    int fetchedDescriptions = 0;
+    for (auto it = rawByIp.constBegin(); it != rawByIp.constEnd(); ++it) {
+        const QString ip = it.key();
+        QString typeText = it.value();
+        const QString location = locationByIp.value(ip);
+        QString name;
+        if (!location.isEmpty() && fetchedDescriptions < 48) {
+            const QString description = fetchHttpText(QUrl(location), 700);
+            if (!description.isEmpty()) {
+                ++fetchedDescriptions;
+                name = ssdpNameFromDescription(description, ip);
+                typeText += QLatin1Char('\n') + description.left(4096);
+            }
+        }
+        if (!name.isEmpty()) {
+            resolved.namesByIp.insert(ip, name);
+        }
+        resolved.typesByIp.insert(ip, ssdpTypeFromText(typeText));
+    }
+
+    return resolved;
 }
 
 QString prettyBonjourName(const QString& serviceType, const QString& instanceName, const QString& targetHost) {
@@ -1266,8 +1602,11 @@ void materializeMdnsState(const QSet<QString>& scannedIps, MdnsResolutionState& 
 
         const auto targetIps = state.ipsByHost.value(targetHost.toLower());
         for (const auto& ip : targetIps) {
-            if (scannedIps.contains(ip) && !state.resolved.namesByIp.contains(ip)) {
-                state.resolved.namesByIp.insert(ip, displayName);
+            if (scannedIps.contains(ip)) {
+                state.resolved.activeIps.insert(ip);
+                if (!state.resolved.namesByIp.contains(ip)) {
+                    state.resolved.namesByIp.insert(ip, displayName);
+                }
             }
         }
     }
@@ -1315,8 +1654,11 @@ void parseMdnsPacketIntoState(const QByteArray& packet, const QSet<QString>& sca
             const QString reverseIp = ipFromReverseMdnsName(recordName);
             if (!reverseIp.isEmpty() && scannedIps.contains(reverseIp)) {
                 const QString normalized = normalizeResolvedName(pointerName, reverseIp);
-                if (!normalized.isEmpty() && !state.resolved.namesByIp.contains(reverseIp)) {
-                    state.resolved.namesByIp.insert(reverseIp, normalized);
+                if (!normalized.isEmpty()) {
+                    state.resolved.activeIps.insert(reverseIp);
+                    if (!state.resolved.namesByIp.contains(reverseIp)) {
+                        state.resolved.namesByIp.insert(reverseIp, normalized);
+                    }
                 }
             } else {
                 const QString serviceType = serviceTypeFromDnsName(recordName);
@@ -1339,6 +1681,7 @@ void parseMdnsPacketIntoState(const QByteArray& packet, const QSet<QString>& sca
                 .arg(static_cast<quint8>(packet.at(dataOffset + 2)))
                 .arg(static_cast<quint8>(packet.at(dataOffset + 3)));
             if (scannedIps.contains(ip)) {
+                state.resolved.activeIps.insert(ip);
                 auto& hostIps = state.ipsByHost[recordName.toLower()];
                 if (!hostIps.contains(ip)) {
                     hostIps.append(ip);
@@ -1485,10 +1828,13 @@ BonjourResolution collectBonjourNamesForService(const QSet<QString>& scannedIps,
 
         const QStringList resolvedIps = resolveMdnsIpv4(targetHost);
         for (const auto& ip : resolvedIps) {
-            if (!scannedIps.contains(ip) || resolved.namesByIp.contains(ip)) {
+            if (!scannedIps.contains(ip)) {
                 continue;
             }
-            resolved.namesByIp.insert(ip, displayName);
+            resolved.activeIps.insert(ip);
+            if (!resolved.namesByIp.contains(ip)) {
+                resolved.namesByIp.insert(ip, displayName);
+            }
         }
     }
     return resolved;
@@ -1523,6 +1869,9 @@ BonjourResolution collectBonjourNames(const QSet<QString>& scannedIps) {
                 resolved.namesByMac.insert(it.key(), it.value());
             }
         }
+        for (const auto& ip : partial.activeIps) {
+            resolved.activeIps.insert(ip);
+        }
     }
     return resolved;
 }
@@ -1555,6 +1904,8 @@ NetworkScanService::NetworkScanService(VendorDbService* vendorDb, QObject* paren
     , m_vendorDb(vendorDb)
     , m_watcher(new QFutureWatcher<nt::ScanRecord>(this)) {
     m_scanPool.setExpiryTimeout(30000);
+    m_enrichmentPool.setExpiryTimeout(30000);
+    m_enrichmentPool.setMaxThreadCount(enrichmentWorkerCountForProfile(QStringLiteral("balanced")));
     connect(m_watcher, &QFutureWatcher<nt::ScanRecord>::finished, this, [this]() {
         const auto future = m_watcher->future();
         if (m_cancelRequested.load()) {
@@ -1567,6 +1918,7 @@ NetworkScanService::NetworkScanService(VendorDbService* vendorDb, QObject* paren
         }
         const quint64 finishedGeneration = m_activeGeneration.load();
         records.reserve(future.resultCount());
+        QSet<QString> recordedIps;
         for (int index = 0; index < future.resultCount(); ++index) {
             auto record = future.resultAt(index);
             if (record.ip.isEmpty()) {
@@ -1607,6 +1959,30 @@ NetworkScanService::NetworkScanService(VendorDbService* vendorDb, QObject* paren
                 }
                 record.name = routeDisplayForHost(m_activeAdapter, record);
                 records.append(record);
+                recordedIps.insert(record.ip);
+            }
+        }
+        {
+            QMutexLocker locker(&m_liveRecordsMutex);
+            for (auto liveIt = m_liveRecords.constBegin(); liveIt != m_liveRecords.constEnd(); ++liveIt) {
+                ScanRecord record = liveIt.value();
+                if (record.ip.trimmed().isEmpty()
+                    || recordedIps.contains(record.ip)
+                    || record.generation != finishedGeneration
+                    || record.status == HostStatus::Offline) {
+                    continue;
+                }
+                const QString currentGateway = cachedGateway();
+                if ((record.gateway.trimmed().isEmpty()
+                     || record.gateway == QStringLiteral("-")
+                     || record.gateway == QStringLiteral("[n/a]"))
+                    && !currentGateway.trimmed().isEmpty()) {
+                    record.gateway = currentGateway;
+                }
+                record.mask = record.mask.trimmed().isEmpty() ? m_cachedMask : record.mask;
+                record.name = routeDisplayForHost(m_activeAdapter, record);
+                records.append(record);
+                recordedIps.insert(record.ip);
             }
         }
         {
@@ -1620,8 +1996,15 @@ NetworkScanService::NetworkScanService(VendorDbService* vendorDb, QObject* paren
         const QString finishedProfile = m_activeScanProfile;
         emit scanFinished(records, durationMs);
         startNameEnrichment(records, finishedGeneration);
-        startDetailEnrichment(records, finishedGeneration, finishedProfile);
+        startDetailEnrichment(records, finishedGeneration, finishedProfile, true);
         startRtspEnrichment(records, finishedGeneration);
+        QTimer::singleShot(900, this, [this, records, finishedGeneration, finishedProfile]() {
+            if (!m_cancelRequested.load() && m_activeGeneration.load() == finishedGeneration) {
+                startNameEnrichment(records, finishedGeneration);
+                startDetailEnrichment(records, finishedGeneration, finishedProfile, true);
+                startRtspEnrichment(records, finishedGeneration);
+            }
+        });
     });
 }
 
@@ -1629,6 +2012,7 @@ NetworkScanService::~NetworkScanService() {
     cancel();
     m_watcher->waitForFinished();
     m_scanPool.waitForDone();
+    m_enrichmentPool.waitForDone();
 }
 
 QList<AdapterInfo> NetworkScanService::adapters() const {
@@ -1708,20 +2092,32 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
     const QString activeScanProfile = normalizedScanProfile(scanProfile);
     m_activeScanProfile = activeScanProfile;
     m_scanPool.setMaxThreadCount(workerCountForProfile(maxWorkers, activeScanProfile));
+    m_enrichmentPool.setMaxThreadCount(enrichmentWorkerCountForProfile(activeScanProfile));
     emit scanStarted();
     setCachedGateway(QStringLiteral("-"));
     m_cachedMask = detectMask(adapter);
+    setCachedGateway(detectGateway(adapter));
     setPrefetchedMacs({});
     {
         QMutexLocker locker(&m_nameEnrichmentMutex);
         m_nameEnrichmentInFlight.clear();
     }
     {
+        QMutexLocker locker(&m_detailEnrichmentMutex);
+        m_detailEnrichmentInFlight.clear();
+        m_detailEnrichmentCompleted.clear();
+    }
+    {
         QMutexLocker locker(&m_prefetchedPingMutex);
         m_prefetchedPingDisplay.clear();
     }
+    const auto startMacs = captureArpTable(adapter.id);
+    if (!startMacs.isEmpty()) {
+        setPrefetchedMacs(startMacs);
+    }
     const auto initialKnownMacs = prefetchedMacsSnapshot();
-    const auto scheduledIps = prioritizeIpsForScan(ips, initialKnownMacs, cachedGateway(), adapter.ip);
+    const QString initialGateway = cachedGateway();
+    const auto scheduledIps = prioritizeIpsForScan(ips, initialKnownMacs, initialGateway, adapter.ip);
     const QSet<QString> scheduledIpSet(scheduledIps.constBegin(), scheduledIps.constEnd());
 
     QList<ScanRecord> seedRecords;
@@ -1761,8 +2157,8 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
 
     QList<QString> immediateProbeIps;
     const int earlyProbeLimit = activeScanProfile == QStringLiteral("fast")
-        ? 16
-        : (activeScanProfile == QStringLiteral("reliable") ? 8 : 12);
+        ? 28
+        : (activeScanProfile == QStringLiteral("reliable") ? 14 : 22);
     const int instantProbeLimit = instantProbeLimitForProfile(activeScanProfile);
     immediateProbeIps.reserve(earlyProbeLimit);
     for (const auto& ip : scheduledIps) {
@@ -1803,7 +2199,7 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
         }
     }
 
-    (void)QtConcurrent::run([scheduledIps, adapter, activeScanProfile]() {
+    (void)QtConcurrent::run(&m_enrichmentPool, [scheduledIps, adapter, activeScanProfile]() {
         QList<QString> onLinkIps;
         onLinkIps.reserve(scheduledIps.size());
         for (const auto& ip : scheduledIps) {
@@ -1822,6 +2218,11 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
         }
     });
 #endif
+    QTimer::singleShot(90, this, [this, scheduledIps, generation]() {
+        if (!m_cancelRequested.load() && generation == m_activeGeneration.load()) {
+            startSsdpEnrichment(scheduledIps, generation);
+        }
+    });
 
     const auto launchPrioritizedProbe = [this, adapter, generation, activeScanProfile](const QString& ip, int delayMs) {
         QTimer::singleShot(delayMs, this, [this, adapter, generation, activeScanProfile, ip]() {
@@ -1829,7 +2230,7 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                 return;
             }
 
-            (void)QtConcurrent::run([this, adapter, generation, activeScanProfile, ip]() {
+            (void)QtConcurrent::run(&m_enrichmentPool, [this, adapter, generation, activeScanProfile, ip]() {
                 if (m_cancelRequested.load() || generation != m_activeGeneration.load()) {
                     return;
                 }
@@ -1969,7 +2370,7 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                 return;
             }
 
-            (void)QtConcurrent::run([this, adapter, generation, activeScanProfile, ip]() {
+            (void)QtConcurrent::run(&m_enrichmentPool, [this, adapter, generation, activeScanProfile, ip]() {
                 if (m_cancelRequested.load() || generation != m_activeGeneration.load()) {
                     return;
                 }
@@ -2093,7 +2494,7 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
         launchFallbackSeed(seedRecords.at(index), delayMs);
     }
 
-    (void)QtConcurrent::run([this, adapter, generation, scheduledIpSet, launchFallbackSeed, launchInstantProbe, activeScanProfile]() {
+    (void)QtConcurrent::run(&m_enrichmentPool, [this, adapter, generation, scheduledIpSet, launchFallbackSeed, launchInstantProbe, activeScanProfile]() {
         const QString detectedGateway = detectGateway(adapter);
         const auto discoveredMacs = captureArpTable(adapter.id);
         if (m_cancelRequested.load() || generation != m_activeGeneration.load()) {
@@ -2105,7 +2506,7 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                 return;
             }
 
-            const QString gateway = detectedGateway.trimmed().isEmpty() ? QStringLiteral("-") : detectedGateway.trimmed();
+            const QString gateway = normalizeGatewayIp(detectedGateway);
             if (gateway != QStringLiteral("-")) {
                 setCachedGateway(gateway);
             }
@@ -2188,7 +2589,13 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                 return QHostAddress(left.ip).toIPv4Address() < QHostAddress(right.ip).toIPv4Address();
             });
 
-            const int probeLimit = qMin(discoveredSeeds.size(), instantProbeLimitForProfile(activeScanProfile));
+            const int probeLimit = qMin(
+                discoveredSeeds.size(),
+                qMax(instantProbeLimitForProfile(activeScanProfile),
+                     activeScanProfile == QStringLiteral("fast")
+                         ? 72
+                         : (activeScanProfile == QStringLiteral("reliable") ? 48 : 60))
+            );
             for (int index = 0; index < discoveredSeeds.size(); ++index) {
                 launchFallbackSeed(discoveredSeeds.at(index), 20 + index * 50);
                 if (index < probeLimit) {
@@ -2198,8 +2605,109 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
         }, Qt::QueuedConnection);
     });
 
+    const auto launchArpHarvest = [this, adapter, generation, scheduledIpSet, launchFallbackSeed, launchInstantProbe, activeScanProfile](int delayMs) {
+        QTimer::singleShot(delayMs, this, [this, adapter, generation, scheduledIpSet, launchFallbackSeed, launchInstantProbe, activeScanProfile]() {
+            if (m_cancelRequested.load() || generation != m_activeGeneration.load()) {
+                return;
+            }
+
+            (void)QtConcurrent::run(&m_enrichmentPool, [this, adapter, generation, scheduledIpSet, launchFallbackSeed, launchInstantProbe, activeScanProfile]() {
+                const auto refreshedMacs = captureArpTable(adapter.id);
+                const QString refreshedGateway = detectGateway(adapter);
+                if (m_cancelRequested.load()
+                    || generation != m_activeGeneration.load()) {
+                    return;
+                }
+
+                QMetaObject::invokeMethod(this, [this, adapter, generation, scheduledIpSet, refreshedMacs, refreshedGateway, launchFallbackSeed, launchInstantProbe, activeScanProfile]() {
+                    if (m_cancelRequested.load() || generation != m_activeGeneration.load()) {
+                        return;
+                    }
+
+                    const QString gateway = normalizeGatewayIp(refreshedGateway);
+                    if (gateway != QStringLiteral("-")) {
+                        setCachedGateway(gateway);
+                    }
+                    mergePrefetchedMacs(refreshedMacs);
+
+                    QSet<QString> visibleIps;
+                    QList<ScanRecord> gatewayUpdates;
+                    {
+                        QMutexLocker locker(&m_liveRecordsMutex);
+                        visibleIps.reserve(m_liveRecords.size());
+                        for (auto liveIt = m_liveRecords.begin(); liveIt != m_liveRecords.end(); ++liveIt) {
+                            visibleIps.insert(liveIt.key());
+                            if (gateway != QStringLiteral("-")
+                                && (liveIt->gateway.trimmed().isEmpty()
+                                    || liveIt->gateway == QStringLiteral("-")
+                                    || liveIt->gateway == QStringLiteral("[n/a]")
+                                    || !isValidGatewayIp(liveIt->gateway))) {
+                                ScanRecord updated = liveIt.value();
+                                updated.gateway = gateway;
+                                updated.name = routeDisplayForHost(adapter, updated);
+                                liveIt.value() = updated;
+                                gatewayUpdates.append(updated);
+                            }
+                        }
+                    }
+                    for (const auto& update : gatewayUpdates) {
+                        emit recordReady(update);
+                    }
+
+                    QList<ScanRecord> seeds;
+                    seeds.reserve(qMin(refreshedMacs.size(), scheduledIpSet.size()));
+                    for (auto it = refreshedMacs.constBegin(); it != refreshedMacs.constEnd(); ++it) {
+                        if (!scheduledIpSet.contains(it.key()) || visibleIps.contains(it.key())) {
+                            continue;
+                        }
+
+                        ScanRecord seed;
+                        seed.ip = it.key();
+                        seed.generation = generation;
+                        seed.status = HostStatus::Unknown;
+                        seed.pingDisplay = QStringLiteral("[n/a]");
+                        seed.portsDisplay = QStringLiteral("-");
+                        seed.port = QStringLiteral("-");
+                        seed.webDetect = QStringLiteral("[n/a]");
+                        seed.speed = QStringLiteral("link");
+                        seed.mac = it.value();
+                        seed.gateway = cachedGateway();
+                        seed.mask = m_cachedMask;
+                        seed.onLink = isOnLink(seed.ip, adapter);
+                        seed.typeHint = QStringLiteral("arp");
+                        seed.hostName = cachedResolvedName(seed.ip, seed.mac);
+                        seed.vendor = vendorDisplayText(seed.hostName, seed.mac, m_vendorDb);
+                        seed.name = routeDisplayForHost(adapter, seed);
+                        seeds.append(seed);
+                    }
+
+                    std::sort(seeds.begin(), seeds.end(), [](const ScanRecord& left, const ScanRecord& right) {
+                        return QHostAddress(left.ip).toIPv4Address() < QHostAddress(right.ip).toIPv4Address();
+                    });
+
+                    const int probeLimit = qMin(
+                        seeds.size(),
+                        activeScanProfile == QStringLiteral("fast")
+                            ? 80
+                            : (activeScanProfile == QStringLiteral("reliable") ? 56 : 68)
+                    );
+                    for (int index = 0; index < seeds.size(); ++index) {
+                        launchFallbackSeed(seeds.at(index), index * 35);
+                        if (index < probeLimit) {
+                            launchInstantProbe(seeds.at(index).ip, index * 24);
+                        }
+                    }
+                }, Qt::QueuedConnection);
+            });
+        });
+    };
+
+    launchArpHarvest(activeScanProfile == QStringLiteral("fast") ? 900 : (activeScanProfile == QStringLiteral("reliable") ? 1700 : 1250));
+    launchArpHarvest(activeScanProfile == QStringLiteral("fast") ? 2300 : (activeScanProfile == QStringLiteral("reliable") ? 3900 : 3000));
+    launchArpHarvest(activeScanProfile == QStringLiteral("fast") ? 4200 : (activeScanProfile == QStringLiteral("reliable") ? 6800 : 5200));
+
     const QSet<QString> immediateProbeSet(immediateProbeIps.constBegin(), immediateProbeIps.constEnd());
-    (void)QtConcurrent::run([this, adapter, generation, startIp, endIp, scheduledIps, immediateProbeSet, launchPrioritizedProbe, launchPingSeed, activeScanProfile, earlyProbeLimit]() {
+    (void)QtConcurrent::run(&m_enrichmentPool, [this, adapter, generation, startIp, endIp, scheduledIps, immediateProbeSet, launchPrioritizedProbe, launchPingSeed, activeScanProfile, earlyProbeLimit]() {
         const auto prefetchedPing = sweepPingRange(startIp, endIp, adapter, activeScanProfile);
         if (prefetchedPing.isEmpty()) {
             return;
@@ -2285,6 +2793,7 @@ void NetworkScanService::cancel() {
         future.cancel();
     }
     m_scanPool.clear();
+    m_enrichmentPool.clear();
     {
         QMutexLocker locker(&m_liveRecordsMutex);
         m_liveRecords.clear();
@@ -2292,6 +2801,11 @@ void NetworkScanService::cancel() {
     {
         QMutexLocker locker(&m_nameEnrichmentMutex);
         m_nameEnrichmentInFlight.clear();
+    }
+    {
+        QMutexLocker locker(&m_detailEnrichmentMutex);
+        m_detailEnrichmentInFlight.clear();
+        m_detailEnrichmentCompleted.clear();
     }
 }
 
@@ -2346,48 +2860,133 @@ void NetworkScanService::startBonjourEnrichment(const QList<QString>& ips, quint
                 ScanRecord updated;
                 bool shouldEmit = false;
                 QString recordMac;
+                const QString ip = it.key();
+                const QString resolvedName = normalizeResolvedName(it.value(), ip);
+                if (resolvedName.isEmpty()) {
+                    continue;
+                }
                 {
                     QMutexLocker locker(&guard->m_liveRecordsMutex);
-                    const auto liveIt = guard->m_liveRecords.constFind(it.key());
+                    const auto liveIt = guard->m_liveRecords.constFind(ip);
                     if (liveIt != guard->m_liveRecords.constEnd()) {
                         updated = liveIt.value();
                         recordMac = updated.mac;
-                        updated.hostName = it.value();
-                        updated.vendor = it.value();
-                        guard->m_liveRecords.insert(it.key(), updated);
+                        updated.hostName = resolvedName;
+                        updated.vendor = resolvedName;
+                        guard->m_liveRecords.insert(ip, updated);
+                        shouldEmit = true;
+                    } else if (bonjourNames.activeIps.contains(ip)) {
+                        updated.ip = ip;
+                        updated.generation = generation;
+                        updated.status = HostStatus::Unknown;
+                        updated.pingDisplay = QStringLiteral("[n/a]");
+                        updated.portsDisplay = QStringLiteral("-");
+                        updated.port = QStringLiteral("-");
+                        updated.webDetect = QStringLiteral("[n/a]");
+                        updated.speed = QStringLiteral("mdns");
+                        updated.typeHint = QStringLiteral("mdns");
+                        updated.mac = guard->prefetchedMacForIp(ip);
+                        updated.gateway = guard->cachedGateway();
+                        updated.mask = guard->m_cachedMask;
+                        updated.onLink = isOnLink(ip, guard->m_activeAdapter);
+                        updated.hostName = resolvedName;
+                        updated.vendor = resolvedName;
+                        updated.name = routeDisplayForHost(guard->m_activeAdapter, updated);
+                        recordMac = updated.mac;
+                        guard->m_liveRecords.insert(ip, updated);
                         shouldEmit = true;
                     }
                 }
                 if (!shouldEmit) {
                     continue;
                 }
-                rememberResolvedName(it.key(), recordMac, it.value());
+                rememberResolvedName(ip, recordMac, resolvedName);
                 emit guard->recordReady(updated);
+                if (updated.speed == QStringLiteral("mdns")
+                    || isMissingPingDisplay(updated.pingDisplay)
+                    || updated.portsDisplay == QStringLiteral("-")
+                    || updated.port == QStringLiteral("-")) {
+                    QPointer<NetworkScanService> probeGuard = guard;
+                    const QString probeIp = ip;
+                    if (!probeGuard) {
+                        continue;
+                    }
+                    (void)QtConcurrent::run(&probeGuard->m_enrichmentPool, [probeGuard, generation, probeIp]() {
+                        if (!probeGuard
+                            || probeGuard->m_cancelRequested.load()
+                            || probeGuard->m_activeGeneration.load() != generation) {
+                            return;
+                        }
+                        auto record = probeGuard->probeHost(probeIp, probeGuard->m_activeAdapter, probeGuard->m_activeScanProfile);
+                        if (!probeGuard
+                            || probeGuard->m_cancelRequested.load()
+                            || record.ip.isEmpty()
+                            || record.status == HostStatus::Offline
+                            || record.generation != probeGuard->m_activeGeneration.load()) {
+                            return;
+                        }
+                        QMetaObject::invokeMethod(probeGuard.data(), [probeGuard, record]() mutable {
+                            if (probeGuard) {
+                                probeGuard->publishLiveRecord(record);
+                            }
+                        }, Qt::QueuedConnection);
+                    });
+                }
             }
         }, Qt::QueuedConnection);
     };
 
-    (void)QtConcurrent::run([guard, generation, scannedIps, adapterId, publishResolution]() {
-        if (!guard || guard->m_cancelRequested.load()) {
+    (void)QtConcurrent::run(&m_enrichmentPool, [guard, generation, scannedIps, adapterId, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
             return;
         }
-        const auto quickNames = collectMdnsNamesWithSocket(scannedIps, priorityBonjourServiceTypes(), adapterId, 1150);
+        const auto quickNames = collectMdnsNamesWithSocket(scannedIps, priorityBonjourServiceTypes(), adapterId, 1450);
         if (!isEmptyBonjourResolution(quickNames)) {
             publishResolution(quickNames);
         }
     });
 
     QTimer::singleShot(1450, this, [guard, generation, scannedIps, adapterId, publishResolution]() {
-        if (!guard || guard->m_cancelRequested.load()) {
+        if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
             return;
         }
-        (void)QtConcurrent::run([guard, generation, scannedIps, adapterId, publishResolution]() {
-            if (!guard || guard->m_cancelRequested.load()) {
+        (void)QtConcurrent::run(&guard->m_enrichmentPool, [guard, generation, scannedIps, adapterId, publishResolution]() {
+            if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
                 return;
             }
-            const auto broadNames = collectMdnsNamesWithSocket(scannedIps, allBonjourServiceTypes(), adapterId, 1700);
+            const auto broadNames = collectMdnsNamesWithSocket(scannedIps, allBonjourServiceTypes(), adapterId, 2300);
             if (!isEmptyBonjourResolution(broadNames)) {
                 publishResolution(broadNames);
+            }
+        });
+    });
+
+    QTimer::singleShot(3500, this, [guard, generation, scannedIps, adapterId, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+            return;
+        }
+        (void)QtConcurrent::run(&guard->m_enrichmentPool, [guard, generation, scannedIps, adapterId, publishResolution]() {
+            if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+                return;
+            }
+            const auto lateNames = collectMdnsNamesWithSocket(scannedIps, allBonjourServiceTypes(), adapterId, 2600);
+            if (!isEmptyBonjourResolution(lateNames)) {
+                publishResolution(lateNames);
+            }
+        });
+    });
+
+    QTimer::singleShot(6200, this, [guard, generation, scannedIps, adapterId, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+            return;
+        }
+        (void)QtConcurrent::run(&guard->m_enrichmentPool, [guard, generation, scannedIps, adapterId, publishResolution]() {
+            if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+                return;
+            }
+            const auto settledNames = collectMdnsNamesWithSocket(scannedIps, allBonjourServiceTypes(), adapterId, 2600);
+            if (!isEmptyBonjourResolution(settledNames)) {
+                publishResolution(settledNames);
             }
         });
     });
@@ -2397,11 +2996,11 @@ void NetworkScanService::startBonjourEnrichment(const QList<QString>& ips, quint
             return;
         }
         QTimer::singleShot(delayMs, guard.data(), [guard, generation, scannedIps, serviceType, publishResolution]() {
-            if (!guard || guard->m_cancelRequested.load()) {
+            if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
                 return;
             }
-            (void)QtConcurrent::run([guard, generation, scannedIps, serviceType, publishResolution]() {
-                if (!guard || guard->m_cancelRequested.load()) {
+            (void)QtConcurrent::run(&guard->m_enrichmentPool, [guard, generation, scannedIps, serviceType, publishResolution]() {
+                if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
                     return;
                 }
                 const auto partial = collectBonjourNamesForService(scannedIps, serviceType);
@@ -2433,6 +3032,191 @@ void NetworkScanService::startBonjourEnrichment(const QList<QString>& ips, quint
 #endif
 }
 
+void NetworkScanService::startSsdpEnrichment(const QList<QString>& ips, quint64 generation) {
+    QSet<QString> scannedIps;
+    for (const auto& ip : ips) {
+        if (!ip.trimmed().isEmpty()) {
+            scannedIps.insert(ip.trimmed());
+        }
+    }
+    if (scannedIps.isEmpty()) {
+        return;
+    }
+
+    QPointer<NetworkScanService> guard(this);
+    const QString adapterId = m_activeAdapter.id;
+    const auto publishResolution = [guard, generation](const SsdpResolution& ssdp) {
+        if (!guard || isEmptySsdpResolution(ssdp)) {
+            return;
+        }
+
+        QMetaObject::invokeMethod(guard.data(), [guard, generation, ssdp]() {
+            if (!guard || guard->m_activeGeneration.load() != generation) {
+                return;
+            }
+
+            QList<ScanRecord> updates;
+            updates.reserve(ssdp.activeIps.size());
+            for (const auto& ip : ssdp.activeIps) {
+                ScanRecord record;
+                const QString discoveredName = normalizeResolvedName(ssdp.namesByIp.value(ip), ip);
+                const QString discoveredType = ssdp.typesByIp.value(ip, QStringLiteral("upnp")).trimmed();
+                const QString discoveredWeb = ssdp.webByIp.value(ip).trimmed();
+                const QString discoveredPort = ssdp.portsByIp.value(ip).trimmed();
+                bool existed = false;
+                {
+                    QMutexLocker locker(&guard->m_liveRecordsMutex);
+                    const auto liveIt = guard->m_liveRecords.constFind(ip);
+                    if (liveIt != guard->m_liveRecords.constEnd()) {
+                        record = liveIt.value();
+                        existed = true;
+                    } else {
+                        record.ip = ip;
+                        record.generation = generation;
+                        record.status = HostStatus::Unknown;
+                        record.pingDisplay = QStringLiteral("[n/a]");
+                        record.portsDisplay = QStringLiteral("-");
+                        record.port = QStringLiteral("-");
+                        record.webDetect = QStringLiteral("[n/a]");
+                        record.speed = QStringLiteral("ssdp");
+                        record.typeHint = discoveredType.isEmpty() ? QStringLiteral("upnp") : discoveredType;
+                        record.mac = guard->prefetchedMacForIp(ip);
+                        record.gateway = guard->cachedGateway();
+                        record.mask = guard->m_cachedMask;
+                        record.onLink = isOnLink(ip, guard->m_activeAdapter);
+                        record.hostName = discoveredName;
+                        record.vendor = vendorDisplayText(record.hostName, record.mac, guard->m_vendorDb);
+                        record.name = routeDisplayForHost(guard->m_activeAdapter, record);
+                    }
+                }
+
+                bool changed = false;
+                if (!discoveredName.isEmpty()
+                    && (isUnknownVendorLabel(record.hostName) || record.hostName == record.vendor)) {
+                    record.hostName = discoveredName;
+                    record.vendor = discoveredName;
+                    changed = true;
+                } else if (isUnknownVendorLabel(record.vendor)) {
+                    const QString vendor = vendorDisplayText(record.hostName, record.mac, guard->m_vendorDb);
+                    if (!isUnknownVendorLabel(vendor)) {
+                        record.vendor = vendor;
+                        changed = true;
+                    }
+                }
+
+                if (!discoveredWeb.isEmpty() && isUnknownVendorLabel(record.webDetect)) {
+                    record.webDetect = discoveredWeb;
+                    changed = true;
+                }
+                if (!discoveredPort.isEmpty()) {
+                    const QString mergedPorts = mergePortDisplay(record.port, discoveredPort);
+                    if (record.port != mergedPorts || record.portsDisplay != mergedPorts) {
+                        record.port = mergedPorts;
+                        record.portsDisplay = mergedPorts;
+                        changed = true;
+                    }
+                }
+                const bool weakCurrentType = isUnknownVendorLabel(record.typeHint)
+                    || record.typeHint == QStringLiteral("icmp")
+                    || record.typeHint == QStringLiteral("udp")
+                    || record.typeHint == QStringLiteral("mdns")
+                    || record.typeHint == QStringLiteral("arp");
+                if (!discoveredType.isEmpty() && weakCurrentType) {
+                    record.typeHint = discoveredType;
+                    changed = true;
+                }
+                if (record.speed.trimmed().isEmpty() || record.speed == QStringLiteral("[n/a]")) {
+                    record.speed = QStringLiteral("ssdp");
+                    changed = true;
+                }
+                const QString routeName = routeDisplayForHost(guard->m_activeAdapter, record);
+                if (record.name != routeName) {
+                    record.name = routeName;
+                    changed = true;
+                }
+
+                if (changed || !existed) {
+                    updates.append(record);
+                }
+            }
+
+            for (auto record : updates) {
+                if (!record.hostName.trimmed().isEmpty() && !isUnknownVendorLabel(record.hostName)) {
+                    rememberResolvedName(record.ip, record.mac, record.hostName);
+                }
+                guard->publishLiveRecord(record);
+                if (isMissingPingDisplay(record.pingDisplay) || record.port == QStringLiteral("-") || record.portsDisplay == QStringLiteral("-")) {
+                    QPointer<NetworkScanService> probeGuard = guard;
+                    const QString probeIp = record.ip;
+                    if (!probeGuard) {
+                        continue;
+                    }
+                    (void)QtConcurrent::run(&probeGuard->m_enrichmentPool, [probeGuard, generation, probeIp]() {
+                        if (!probeGuard
+                            || probeGuard->m_cancelRequested.load()
+                            || probeGuard->m_activeGeneration.load() != generation) {
+                            return;
+                        }
+                        auto probed = probeGuard->probeHost(probeIp, probeGuard->m_activeAdapter, probeGuard->m_activeScanProfile);
+                        if (!probeGuard
+                            || probeGuard->m_cancelRequested.load()
+                            || probed.ip.isEmpty()
+                            || probed.status == HostStatus::Offline
+                            || probed.generation != probeGuard->m_activeGeneration.load()) {
+                            return;
+                        }
+                        QMetaObject::invokeMethod(probeGuard.data(), [probeGuard, probed]() mutable {
+                            if (probeGuard) {
+                                probeGuard->publishLiveRecord(probed);
+                            }
+                        }, Qt::QueuedConnection);
+                    });
+                }
+            }
+        }, Qt::QueuedConnection);
+    };
+
+    (void)QtConcurrent::run(&m_enrichmentPool, [guard, generation, scannedIps, adapterId, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+            return;
+        }
+        const auto ssdp = collectSsdpDevices(scannedIps, adapterId, 1500);
+        if (!isEmptySsdpResolution(ssdp)) {
+            publishResolution(ssdp);
+        }
+    });
+
+    QTimer::singleShot(2600, this, [guard, generation, scannedIps, adapterId, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+            return;
+        }
+        (void)QtConcurrent::run(&guard->m_enrichmentPool, [guard, generation, scannedIps, adapterId, publishResolution]() {
+            if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+                return;
+            }
+            const auto ssdp = collectSsdpDevices(scannedIps, adapterId, 1800);
+            if (!isEmptySsdpResolution(ssdp)) {
+                publishResolution(ssdp);
+            }
+        });
+    });
+
+    QTimer::singleShot(5200, this, [guard, generation, scannedIps, adapterId, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+            return;
+        }
+        (void)QtConcurrent::run(&guard->m_enrichmentPool, [guard, generation, scannedIps, adapterId, publishResolution]() {
+            if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+                return;
+            }
+            const auto ssdp = collectSsdpDevices(scannedIps, adapterId, 2200);
+            if (!isEmptySsdpResolution(ssdp)) {
+                publishResolution(ssdp);
+            }
+        });
+    });
+}
+
 void NetworkScanService::startRtspEnrichment(const QList<ScanRecord>& records, quint64 generation) {
     QList<ScanRecord> candidates;
     candidates.reserve(records.size());
@@ -2453,12 +3237,12 @@ void NetworkScanService::startRtspEnrichment(const QList<ScanRecord>& records, q
     }
 
     QPointer<NetworkScanService> guard(this);
-    (void)QtConcurrent::run([guard, generation, candidates]() {
+    (void)QtConcurrent::run(&m_enrichmentPool, [guard, generation, candidates]() {
         QList<ScanRecord> updates;
         updates.reserve(candidates.size());
 
         for (const auto& record : candidates) {
-            if (!guard || guard->m_activeGeneration.load() != generation) {
+            if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
                 return;
             }
             if (!tryConnectPort(record.ip, 554, 110)) {
@@ -2534,46 +3318,38 @@ void NetworkScanService::startNameEnrichment(const QList<ScanRecord>& records, q
     }
 
     QPointer<NetworkScanService> guard(this);
-    (void)QtConcurrent::run([guard, generation, candidates]() {
-        QList<ScanRecord> updates;
-        updates.reserve(candidates.size());
-        for (auto record : candidates) {
-            if (!guard || guard->m_activeGeneration.load() != generation) {
-                break;
-            }
-
-            QString name = cachedResolvedName(record.ip, record.mac);
-            if (name.isEmpty()) {
-                name = reverseLookupName(record.ip);
-            }
-            if (name.isEmpty()) {
-                continue;
-            }
-
-            record.hostName = name;
-            record.vendor = name;
-            rememberResolvedName(record.ip, record.mac, name);
-            updates.append(record);
-        }
-
-        if (!guard) {
-            return;
-        }
-        QMetaObject::invokeMethod(guard.data(), [guard, generation, candidates, updates]() {
+    for (auto candidate : candidates) {
+        (void)QtConcurrent::run(&m_enrichmentPool, [guard, generation, candidate]() mutable {
             if (!guard) {
                 return;
             }
-            {
-                QMutexLocker locker(&guard->m_nameEnrichmentMutex);
-                for (const auto& record : candidates) {
-                    guard->m_nameEnrichmentInFlight.remove(record.ip);
+            QString name;
+            if (guard->m_activeGeneration.load() == generation && !guard->m_cancelRequested.load()) {
+                name = cachedResolvedName(candidate.ip, candidate.mac);
+                if (name.isEmpty()) {
+                    name = reverseLookupName(candidate.ip);
+                }
+                if (!name.isEmpty()) {
+                    rememberResolvedName(candidate.ip, candidate.mac, name);
                 }
             }
-            if (guard->m_activeGeneration.load() != generation) {
-                return;
-            }
 
-            for (auto updated : updates) {
+            QMetaObject::invokeMethod(guard.data(), [guard, generation, candidate, name]() mutable {
+                if (!guard) {
+                    return;
+                }
+                {
+                    QMutexLocker locker(&guard->m_nameEnrichmentMutex);
+                    guard->m_nameEnrichmentInFlight.remove(candidate.ip);
+                }
+                if (guard->m_activeGeneration.load() != generation || name.isEmpty()) {
+                    return;
+                }
+
+                ScanRecord updated = candidate;
+                updated.hostName = name;
+                updated.vendor = name;
+
                 {
                     QMutexLocker locker(&guard->m_liveRecordsMutex);
                     const auto liveIt = guard->m_liveRecords.constFind(updated.ip);
@@ -2593,16 +3369,23 @@ void NetworkScanService::startNameEnrichment(const QList<ScanRecord>& records, q
                     }
                 }
                 emit guard->recordReady(updated);
-            }
-        }, Qt::QueuedConnection);
-    });
+            }, Qt::QueuedConnection);
+        });
+    }
 }
 
-void NetworkScanService::startDetailEnrichment(const QList<ScanRecord>& records, quint64 generation, const QString& scanProfile) {
+void NetworkScanService::startDetailEnrichment(const QList<ScanRecord>& records, quint64 generation, const QString& scanProfile, bool force) {
     QList<ScanRecord> candidates;
     candidates.reserve(records.size());
-    for (const auto& record : records) {
-        if (!record.ip.trimmed().isEmpty() && record.status != HostStatus::Offline) {
+    {
+        QMutexLocker locker(&m_detailEnrichmentMutex);
+        for (const auto& record : records) {
+            if (!needsDetailEnrichment(record)
+                || m_detailEnrichmentInFlight.contains(record.ip)
+                || (!force && m_detailEnrichmentCompleted.contains(record.ip))) {
+                continue;
+            }
+            m_detailEnrichmentInFlight.insert(record.ip);
             candidates.append(record);
         }
     }
@@ -2611,19 +3394,38 @@ void NetworkScanService::startDetailEnrichment(const QList<ScanRecord>& records,
     }
 
     QPointer<NetworkScanService> guard(this);
-    (void)QtConcurrent::run([guard, generation, candidates, scanProfile]() {
-        QList<ScanRecord> updates;
-        updates.reserve(candidates.size());
-        const ScanTiming timing = scanTimingForProfile(scanProfile);
-        const int polishPortTimeoutMs = qBound(220, timing.portTimeoutMs + 140, 750);
-
-        for (auto record : candidates) {
-            if (!guard || guard->m_activeGeneration.load() != generation) {
+    const AdapterInfo adapter = m_activeAdapter;
+    for (auto candidate : candidates) {
+        (void)QtConcurrent::run(&m_enrichmentPool, [guard, generation, candidate, scanProfile, adapter]() mutable {
+            if (!guard) {
                 return;
             }
 
+            auto record = candidate;
             bool changed = false;
-            const QString gateway = guard->cachedGateway();
+            const ScanTiming timing = scanTimingForProfile(scanProfile);
+            const int polishPortTimeoutMs = qBound(220, timing.portTimeoutMs + 140, 750);
+            if (guard->m_activeGeneration.load() != generation || guard->m_cancelRequested.load()) {
+                QMetaObject::invokeMethod(guard.data(), [guard, generation, ip = record.ip]() {
+                    if (!guard) {
+                        return;
+                    }
+                    QMutexLocker locker(&guard->m_detailEnrichmentMutex);
+                    guard->m_detailEnrichmentInFlight.remove(ip);
+                    if (guard->m_activeGeneration.load() == generation) {
+                        guard->m_detailEnrichmentCompleted.insert(ip);
+                    }
+                }, Qt::QueuedConnection);
+                return;
+            }
+
+            QString gateway = guard->cachedGateway();
+            if (!isValidGatewayIp(gateway)) {
+                gateway = detectGateway(adapter);
+                if (isValidGatewayIp(gateway)) {
+                    guard->setCachedGateway(gateway);
+                }
+            }
             if ((record.gateway.trimmed().isEmpty()
                  || record.gateway == QStringLiteral("-")
                  || record.gateway == QStringLiteral("[n/a]"))
@@ -2641,6 +3443,37 @@ void NetworkScanService::startDetailEnrichment(const QList<ScanRecord>& records,
                 if (!mac.trimmed().isEmpty() && mac != QStringLiteral("-")) {
                     record.mac = mac;
                     changed = true;
+                }
+            }
+
+            if (isMissingPingDisplay(record.pingDisplay)) {
+                PingResult ping = NetworkScanService::pingHost(record.ip, adapter.ip, qBound(320, timing.pingTimeoutMs, 1400));
+                if (!ping.success && (record.onLink || (!record.mac.trimmed().isEmpty() && record.mac != QStringLiteral("-")))) {
+                    ping = NetworkScanService::retryPingHost(
+                        record.ip,
+                        adapter.ip,
+                        qBound(320, timing.pingTimeoutMs, 1400),
+                        qBound(900, timing.retryWindowMs / 2, 2800),
+                        qBound(120, timing.retryIntervalMs, 420)
+                    );
+                }
+                if (ping.success) {
+                    record.status = HostStatus::Online;
+                    record.pingDisplay = ping.display.isEmpty() ? QStringLiteral("online") : ping.display;
+                    record.speed = QStringLiteral("icmp");
+                    changed = true;
+                    if (record.hostName.isEmpty() || isUnknownVendorLabel(record.hostName)) {
+                        QString name = ping.resolvedName;
+                        if (name.isEmpty()) {
+                            name = cachedResolvedName(record.ip, record.mac);
+                        }
+                        if (!name.isEmpty()) {
+                            record.hostName = name;
+                            record.vendor = name;
+                            rememberResolvedName(record.ip, record.mac, name);
+                            changed = true;
+                        }
+                    }
                 }
             }
 
@@ -2697,23 +3530,23 @@ void NetworkScanService::startDetailEnrichment(const QList<ScanRecord>& records,
                 changed = true;
             }
 
-            if (changed) {
-                updates.append(record);
-            }
-        }
-
-        if (!guard || updates.isEmpty()) {
-            return;
-        }
-        QMetaObject::invokeMethod(guard.data(), [guard, generation, updates]() {
-            if (!guard || guard->m_activeGeneration.load() != generation) {
-                return;
-            }
-            for (auto updated : updates) {
-                guard->publishLiveRecord(updated);
-            }
-        }, Qt::QueuedConnection);
-    });
+            QMetaObject::invokeMethod(guard.data(), [guard, generation, record, changed]() mutable {
+                if (!guard) {
+                    return;
+                }
+                {
+                    QMutexLocker locker(&guard->m_detailEnrichmentMutex);
+                    guard->m_detailEnrichmentInFlight.remove(record.ip);
+                    if (guard->m_activeGeneration.load() == generation) {
+                        guard->m_detailEnrichmentCompleted.insert(record.ip);
+                    }
+                }
+                if (changed && guard->m_activeGeneration.load() == generation) {
+                    guard->publishLiveRecord(record);
+                }
+            }, Qt::QueuedConnection);
+        });
+    }
 }
 
 void NetworkScanService::publishLiveRecord(ScanRecord record) {
@@ -2738,6 +3571,9 @@ void NetworkScanService::publishLiveRecord(ScanRecord record) {
     if (needsNameEnrichment(record)) {
         startNameEnrichment({record}, record.generation);
     }
+    if (needsDetailEnrichment(record)) {
+        startDetailEnrichment({record}, record.generation, m_activeScanProfile, false);
+    }
 }
 
 QString NetworkScanService::cachedGateway() const {
@@ -2746,7 +3582,7 @@ QString NetworkScanService::cachedGateway() const {
 }
 
 void NetworkScanService::setCachedGateway(const QString& gateway) {
-    const QString normalized = gateway.trimmed().isEmpty() ? QStringLiteral("-") : gateway.trimmed();
+    const QString normalized = normalizeGatewayIp(gateway);
     QMutexLocker locker(&m_routeMutex);
     m_cachedGateway = normalized;
 }
@@ -3200,11 +4036,20 @@ QString NetworkScanService::detectWebService(const QString& ip, const QStringLis
     if (containsValueInsensitive(openPorts, QStringLiteral("8443"))) {
         endpoints.append(QStringLiteral("https://%1:8443").arg(ip));
     }
+    if (containsValueInsensitive(openPorts, QStringLiteral("5001"))) {
+        endpoints.append(QStringLiteral("https://%1:5001").arg(ip));
+    }
     if (containsValueInsensitive(openPorts, QStringLiteral("80"))) {
         endpoints.append(QStringLiteral("http://%1").arg(ip));
     }
     if (containsValueInsensitive(openPorts, QStringLiteral("8080"))) {
         endpoints.append(QStringLiteral("http://%1:8080").arg(ip));
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("5000"))) {
+        endpoints.append(QStringLiteral("http://%1:5000").arg(ip));
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("7000"))) {
+        endpoints.append(QStringLiteral("http://%1:7000").arg(ip));
     }
     if (!endpoints.isEmpty()) {
         return endpoints.join(QStringLiteral(" | "));
@@ -3254,7 +4099,10 @@ QHash<QString, QString> NetworkScanService::captureArpTable(const QString& adapt
         if (!adapterId.trimmed().isEmpty() && netif != adapterId) {
             continue;
         }
-        entries.insert(ip, normalizeMacString(match.captured(3)));
+        const QString mac = normalizeMacString(match.captured(3));
+        if (mac != QStringLiteral("-")) {
+            entries.insert(ip, mac);
+        }
     }
 #elif defined(Q_OS_MACOS)
     const QString output = runCommandCapture(QStringLiteral("arp"), {QStringLiteral("-an")}, false, &exitStatus);
@@ -3277,7 +4125,10 @@ QHash<QString, QString> NetworkScanService::captureArpTable(const QString& adapt
         if (macToken.compare(QStringLiteral("(incomplete)"), Qt::CaseInsensitive) == 0) {
             continue;
         }
-        entries.insert(ip, normalizeMacString(macToken));
+        const QString mac = normalizeMacString(macToken);
+        if (mac != QStringLiteral("-")) {
+            entries.insert(ip, mac);
+        }
     }
 #else
     const QString output = runCommandCapture(QStringLiteral("arp"), {QStringLiteral("-a")}, false, &exitStatus);
@@ -3291,7 +4142,10 @@ QHash<QString, QString> NetworkScanService::captureArpTable(const QString& adapt
         if (!match.hasMatch()) {
             continue;
         }
-        entries.insert(match.captured(1), normalizeMacString(match.captured(2)));
+        const QString mac = normalizeMacString(match.captured(2));
+        if (mac != QStringLiteral("-")) {
+            entries.insert(match.captured(1), mac);
+        }
     }
 #endif
     return entries;
@@ -3315,56 +4169,74 @@ QString NetworkScanService::detectGateway(const AdapterInfo& adapter) {
 
     static QMutex mutex;
     static QHash<QString, QString> cache;
+    const QString cacheKey = adapter.id + QLatin1Char('|') + adapter.ip + QLatin1Char('|') + adapter.network;
     {
         QMutexLocker locker(&mutex);
-        const auto cached = cache.constFind(adapter.id);
-        if (cached != cache.constEnd()) {
+        const auto cached = cache.constFind(cacheKey);
+        if (cached != cache.constEnd() && isValidGatewayIp(cached.value())) {
             return cached.value();
         }
     }
 
     int exitStatus = -1;
     const QString output = runCommandCapture(QStringLiteral("netstat"), {QStringLiteral("-rn"), QStringLiteral("-f"), QStringLiteral("inet")}, false, &exitStatus);
-    if (exitStatus < 0) {
-        return QStringLiteral("-");
-    }
 
     QHash<QString, QString> discovered;
-    const QStringList lines = output.split(QLatin1Char('\n'));
-    for (const QString& rawLine : lines) {
-        const QString line = rawLine.simplified();
-        if (line.isEmpty()
-            || line.startsWith(QStringLiteral("Routing tables"))
-            || line.startsWith(QStringLiteral("Internet"))
-            || line.startsWith(QStringLiteral("Destination"))) {
-            continue;
-        }
+    if (exitStatus >= 0) {
+        const QStringList lines = output.split(QLatin1Char('\n'));
+        for (const QString& rawLine : lines) {
+            const QString line = rawLine.simplified();
+            if (line.isEmpty()
+                || line.startsWith(QStringLiteral("Routing tables"))
+                || line.startsWith(QStringLiteral("Internet"))
+                || line.startsWith(QStringLiteral("Destination"))) {
+                continue;
+            }
 
-        const QStringList parts = line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-        if (parts.size() < 4) {
-            continue;
-        }
+            const QStringList parts = line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (parts.size() < 4) {
+                continue;
+            }
 
-        const QString destination = parts.at(0);
-        const QString gateway = parts.at(1).trimmed();
-        const QString netif = parts.at(3).trimmed();
-        if (netif.isEmpty() || gateway.isEmpty() || gateway.startsWith(QStringLiteral("link#"))) {
-            continue;
-        }
+            const QString destination = parts.at(0);
+            const QString gateway = normalizeGatewayIp(parts.at(1));
+            const QString netif = parts.at(3).trimmed();
+            if (netif.isEmpty() || gateway == QStringLiteral("-")) {
+                continue;
+            }
 
-        const bool prefer = destination == QStringLiteral("default");
-        if (prefer || !discovered.contains(netif)) {
-            discovered.insert(netif, gateway);
+            const bool prefer = destination == QStringLiteral("default");
+            if (prefer || !discovered.contains(netif)) {
+                discovered.insert(netif, gateway);
+            }
         }
     }
 
     {
         QMutexLocker locker(&mutex);
-        for (auto it = discovered.begin(); it != discovered.end(); ++it) {
-            cache.insert(it.key(), it.value());
+        const QString fromNetstat = discovered.value(adapter.id, QStringLiteral("-"));
+        if (isValidGatewayIp(fromNetstat)) {
+            cache.insert(cacheKey, fromNetstat);
+            return fromNetstat;
         }
-        return cache.value(adapter.id, QStringLiteral("-"));
     }
+
+    int routeExitStatus = -1;
+    const QString routeOutput = runCommandCapture(QStringLiteral("route"), {QStringLiteral("-n"), QStringLiteral("get"), QStringLiteral("default")}, false, &routeExitStatus);
+    if (routeExitStatus >= 0) {
+        static const QRegularExpression gatewayRe(QStringLiteral("^\\s*gateway:\\s*(\\S+)"), QRegularExpression::MultilineOption);
+        static const QRegularExpression interfaceRe(QStringLiteral("^\\s*interface:\\s*(\\S+)"), QRegularExpression::MultilineOption);
+        const auto gatewayMatch = gatewayRe.match(routeOutput);
+        const auto interfaceMatch = interfaceRe.match(routeOutput);
+        const QString routeGateway = gatewayMatch.hasMatch() ? normalizeGatewayIp(gatewayMatch.captured(1)) : QStringLiteral("-");
+        const QString routeInterface = interfaceMatch.hasMatch() ? interfaceMatch.captured(1).trimmed() : QString();
+        if (routeGateway != QStringLiteral("-") && (routeInterface.isEmpty() || routeInterface == adapter.id)) {
+            QMutexLocker locker(&mutex);
+            cache.insert(cacheKey, routeGateway);
+            return routeGateway;
+        }
+    }
+    return QStringLiteral("-");
 #else
     Q_UNUSED(adapter)
     return QStringLiteral("-");

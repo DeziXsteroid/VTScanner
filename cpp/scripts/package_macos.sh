@@ -180,6 +180,8 @@ fi
 
 rm -rf "$APP_PATH"
 cp -R "$BUILD_APP_PATH" "$APP_PATH"
+rm -rf "$APP_PATH/Contents/Frameworks" "$APP_PATH/Contents/PlugIns" "$APP_PATH/Contents/_CodeSignature"
+rm -f "$APP_PATH/Contents/Resources/qt.conf"
 
 MACDEPLOYQT_ARGS=(
   -always-overwrite

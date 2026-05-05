@@ -60,9 +60,10 @@ private:
     static QString detectMask(const AdapterInfo& adapter);
     static bool isOnLink(const QString& ip, const AdapterInfo& adapter);
     void startBonjourEnrichment(const QList<QString>& ips, quint64 generation);
+    void startSsdpEnrichment(const QList<QString>& ips, quint64 generation);
     void startRtspEnrichment(const QList<ScanRecord>& records, quint64 generation);
     void startNameEnrichment(const QList<ScanRecord>& records, quint64 generation);
-    void startDetailEnrichment(const QList<ScanRecord>& records, quint64 generation, const QString& scanProfile);
+    void startDetailEnrichment(const QList<ScanRecord>& records, quint64 generation, const QString& scanProfile, bool force = false);
     void publishLiveRecord(ScanRecord record);
     QString cachedGateway() const;
     void setCachedGateway(const QString& gateway);
@@ -90,7 +91,11 @@ private:
     QHash<QString, ScanRecord> m_liveRecords;
     mutable QMutex m_nameEnrichmentMutex;
     QSet<QString> m_nameEnrichmentInFlight;
+    mutable QMutex m_detailEnrichmentMutex;
+    QSet<QString> m_detailEnrichmentInFlight;
+    QSet<QString> m_detailEnrichmentCompleted;
     QThreadPool m_scanPool;
+    QThreadPool m_enrichmentPool;
 };
 
 } // namespace nt

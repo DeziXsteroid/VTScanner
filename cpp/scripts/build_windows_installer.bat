@@ -35,4 +35,4 @@ if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
 "%ISCC%" "%ISS_SCRIPT%"
 if errorlevel 1 exit /b 1
 
-echo Installer created in: %DIST_DIR%\Network-Tools-1.0.6-Setup-win64.exe
+echo Installer created in: %DIST_DIR%\Network-Tools-1.0.7-Setup-win64.exe

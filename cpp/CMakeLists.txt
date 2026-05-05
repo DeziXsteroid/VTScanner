@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(NetworkToolsQt VERSION 1.0.6 LANGUAGES CXX)
+project(NetworkToolsQt VERSION 1.0.7 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -88,6 +88,17 @@ if(APPLE)
         MACOSX_BUNDLE_BUNDLE_VERSION "${APP_BUNDLE_VERSION}"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${APP_BUNDLE_VERSION}"
         MACOSX_BUNDLE_INFO_PLIST "${APP_MAC_INFO_PLIST}"
+    )
+
+    add_custom_command(TARGET NetworkToolsQt POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "$<TARGET_BUNDLE_DIR:NetworkToolsQt>/Contents/Frameworks"
+            "$<TARGET_BUNDLE_DIR:NetworkToolsQt>/Contents/PlugIns"
+            "$<TARGET_BUNDLE_DIR:NetworkToolsQt>/Contents/_CodeSignature"
+        COMMAND ${CMAKE_COMMAND} -E rm -f
+            "$<TARGET_BUNDLE_DIR:NetworkToolsQt>/Contents/Resources/qt.conf"
+        COMMENT "Cleaning stale deployed Qt runtime from local build bundle"
+        VERBATIM
     )
 endif()
 

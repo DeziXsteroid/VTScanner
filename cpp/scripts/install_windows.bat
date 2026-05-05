@@ -5,7 +5,7 @@ set ROOT_DIR=%~dp0\..\..
 set ROOT_DIR=%ROOT_DIR:\/=%
 for %%I in ("%ROOT_DIR%") do set ROOT_DIR=%%~fI
 set PACKAGE_DIR=%ROOT_DIR%\cpp\dist\NetworkToolsQt
-set TARGET_DIR=%ProgramFiles%\Network Tools 1.0.6
+set TARGET_DIR=%ProgramFiles%\Network Tools 1.0.7
 set APPDATA_DIR=%APPDATA%\NetWorkTools
 set DATA_DIR=%APPDATA_DIR%\data
 set MANUF_PATH=%DATA_DIR%\manuf
@@ -38,7 +38,7 @@ if errorlevel 1 (
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ws = New-Object -ComObject WScript.Shell; " ^
-  "$shortcut = $ws.CreateShortcut([System.IO.Path]::Combine([Environment]::GetFolderPath('Desktop'),'Network Tools 1.0.6.lnk')); " ^
+  "$shortcut = $ws.CreateShortcut([System.IO.Path]::Combine([Environment]::GetFolderPath('Desktop'),'Network Tools 1.0.7.lnk')); " ^
   "$shortcut.TargetPath = '%TARGET_DIR%\NetworkToolsQt.exe'; " ^
   "$shortcut.WorkingDirectory = '%TARGET_DIR%'; " ^
   "$shortcut.Save()"

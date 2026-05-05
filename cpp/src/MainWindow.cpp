@@ -151,12 +151,12 @@ int autoScanWorkerCountForProfile(const QString& profile) {
     const QString normalized = normalizedScanProfileForUi(profile);
     const int cores = qMax(2, QThread::idealThreadCount());
     if (normalized == QStringLiteral("fast")) {
-        return qBound(32, cores * 12, 128);
+        return qBound(24, cores * 6, 64);
     }
     if (normalized == QStringLiteral("reliable")) {
-        return qBound(8, cores * 4, 48);
+        return qBound(6, cores * 3, 24);
     }
-    return qBound(24, cores * 8, 96);
+    return qBound(16, cores * 5, 48);
 }
 
 QString ipScanLogPath() {
@@ -1083,6 +1083,24 @@ bool isMissingScanValue(const QString& value) {
     return isUnknownVendorText(value);
 }
 
+bool isValidGatewayText(const QString& value) {
+    const auto address = QHostAddress(value.trimmed());
+    if (address.protocol() != QAbstractSocket::IPv4Protocol) {
+        return false;
+    }
+    const quint32 ip = address.toIPv4Address();
+    const quint8 first = static_cast<quint8>((ip >> 24) & 0xff);
+    const quint8 last = static_cast<quint8>(ip & 0xff);
+    return ip != 0
+        && ip != 0xffffffffu
+        && first != 0
+        && first != 127
+        && first < 224
+        && !(first == 169 && static_cast<quint8>((ip >> 16) & 0xff) == 254)
+        && last != 0
+        && last != 255;
+}
+
 void mergeScanDisplayFields(nt::ScanRecord& target, const nt::ScanRecord& source) {
     if (target.ip.isEmpty() || source.ip.isEmpty() || target.ip != source.ip) {
         return;
@@ -1132,7 +1150,10 @@ void mergeScanDisplayFields(nt::ScanRecord& target, const nt::ScanRecord& source
     if (isMissingScanValue(target.name) && !isMissingScanValue(source.name)) {
         target.name = source.name;
     }
-    if (isMissingScanValue(target.gateway) && !isMissingScanValue(source.gateway)) {
+    if (!isValidGatewayText(target.gateway)) {
+        target.gateway = QStringLiteral("-");
+    }
+    if (!isValidGatewayText(target.gateway) && isValidGatewayText(source.gateway)) {
         target.gateway = source.gateway;
     }
     if (isMissingScanValue(target.mask) && !isMissingScanValue(source.mask)) {
