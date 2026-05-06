@@ -274,7 +274,7 @@ These are current reality and should not be hidden:
 
 - installer naming in scripts is not fully normalized
 - direct macOS bundle naming and installer naming use different conventions
-- script and installer version labels are currently normalized to `1.0.6`
+- script and installer version labels are currently normalized to `1.0.8`
 - packaging on a clean machine may require additional attention around plugin-driven Qt dependencies
 
 If a future task is about release engineering, inspect the scripts before assuming the docs are perfectly synchronized with every hardcoded name.

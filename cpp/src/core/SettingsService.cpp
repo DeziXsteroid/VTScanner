@@ -48,7 +48,12 @@ bool SettingsService::load() {
         return false;
     }
 
-    m_config = deepMerge(defaultConfig(), doc.object());
+    const QJsonObject loaded = doc.object();
+    m_config = deepMerge(defaultConfig(), loaded);
+    if (!loaded.contains(QStringLiteral("scan_profile_user_selected"))
+        && loaded.value(QStringLiteral("scan_profile")).toString().trimmed().toLower() == QStringLiteral("balanced")) {
+        m_config.insert(QStringLiteral("scan_profile"), QStringLiteral("fast"));
+    }
     return true;
 }
 
@@ -96,7 +101,7 @@ int SettingsService::scanWorkers() const {
 }
 
 QString SettingsService::scanProfile() const {
-    const QString profile = value(QStringLiteral("scan_profile"), QStringLiteral("balanced")).toString(QStringLiteral("balanced")).trimmed().toLower();
+    const QString profile = value(QStringLiteral("scan_profile"), QStringLiteral("fast")).toString(QStringLiteral("fast")).trimmed().toLower();
     if (profile == QStringLiteral("fast") || profile == QStringLiteral("reliable")) {
         return profile;
     }
@@ -136,7 +141,8 @@ QJsonObject SettingsService::defaultConfig() {
         {QStringLiteral("ui_scale"), 92},
         {QStringLiteral("scan_workers"), 96},
         {QStringLiteral("scan_auto_workers"), true},
-        {QStringLiteral("scan_profile"), QStringLiteral("balanced")},
+        {QStringLiteral("scan_profile"), QStringLiteral("fast")},
+        {QStringLiteral("scan_profile_user_selected"), false},
         {QStringLiteral("scan_background_refresh"), false},
         {QStringLiteral("auto_scan_enabled"), false},
         {QStringLiteral("auto_scan_interval_sec"), 30},

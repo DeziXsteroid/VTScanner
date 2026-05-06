@@ -315,7 +315,7 @@ Build and release behavior is driven by:
 Important current reality:
 
 - direct macOS deploy artifact is `cpp/dist/Network Tools.app`
-- installer naming is currently pinned to `1.0.6` across release scripts
+- installer naming is currently pinned to `1.0.8` across release scripts
 - macOS packaging may require extra attention around `macdeployqt` search paths and plugin-driven Qt frameworks
 
 ## High-Risk Editing Zones

@@ -160,6 +160,8 @@ private:
     void updateScanSortButton();
     void toggleScanSortOrder();
     void refreshScanToolbarIcons();
+    void updateScanProfileButton();
+    void setScanProfile(const QString& profile);
     void resetScanLog();
     void appendScanLogLine(const QString& line);
     void openScanLog();
@@ -254,8 +256,11 @@ private:
     QPushButton* m_scanSortButton {nullptr};
     QPushButton* m_scanStopButton {nullptr};
     QToolButton* m_scanToolsButton {nullptr};
+    QToolButton* m_scanProfileButton {nullptr};
     QMenu* m_scanToolsMenu {nullptr};
+    QMenu* m_scanProfileMenu {nullptr};
     QMap<int, QAction*> m_scanColumnActions;
+    QMap<QString, QAction*> m_scanProfileActions;
     QTimer* m_scanAutoScanTimer {nullptr};
     QTimer* m_scanColumnWidthSaveTimer {nullptr};
     QTimer* m_scanBackgroundRefreshTimer {nullptr};
@@ -270,7 +275,9 @@ private:
     bool m_scanLaunchPending {false};
     bool m_scanPolishingActive {false};
     bool m_scanBackgroundRefreshRun {false};
+    bool m_adapterReloadRetryScheduled {false};
     QString m_scanLogPath;
+    QList<nt::AdapterInfo> m_cachedAdapters;
     quint64 m_currentScanGeneration {0};
 
     QComboBox* m_requestMethodCombo {nullptr};

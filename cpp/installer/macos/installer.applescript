@@ -28,10 +28,10 @@ on run
 		set langCode to "en"
 	end if
 	
-	set appName to "Network Tools 1.0.7"
+	set appName to "Network Tools 1.0.8"
 	set bundlePath to POSIX path of (path to me)
 	set resourcesPath to bundlePath & "Contents/Resources/"
-	set payloadAppPath to resourcesPath & "payload/Network Tools 1.0.7.app"
+	set payloadAppPath to resourcesPath & "payload/Network Tools 1.0.8.app"
 	set payloadManufPath to resourcesPath & "payload/manuf"
 	set targetFolder to choose folder with prompt (my chooseText(langCode, "Выберите папку установки приложения.", "Choose the application destination folder.")) default location path to applications folder
 	set installDir to POSIX path of targetFolder

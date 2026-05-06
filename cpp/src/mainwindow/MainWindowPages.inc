@@ -128,6 +128,34 @@ QWidget* MainWindow::createScanPage() {
     m_scanToolsButton->setToolTip(uiText(language, "Колонки таблицы", "Table columns"));
     optionsRow->addWidget(m_scanToolsButton);
 
+    m_scanProfileMenu = new QMenu(toolbar);
+    auto* scanProfileGroup = new QActionGroup(m_scanProfileMenu);
+    scanProfileGroup->setExclusive(true);
+    const QStringList scanProfiles {
+        QStringLiteral("fast"),
+        QStringLiteral("balanced"),
+        QStringLiteral("reliable"),
+    };
+    for (const auto& profile : scanProfiles) {
+        auto* action = m_scanProfileMenu->addAction(scanProfileTitle(m_settings, profile));
+        action->setCheckable(true);
+        action->setActionGroup(scanProfileGroup);
+        action->setToolTip(scanProfileDescription(m_settings, profile));
+        action->setChecked(normalizedScanProfileForUi(m_settings->scanProfile()) == profile);
+        connect(action, &QAction::triggered, this, [this, profile]() {
+            setScanProfile(profile);
+        });
+        m_scanProfileActions.insert(profile, action);
+    }
+    m_scanProfileMenu->setTitle(uiText(language, "Режим скана", "Scan mode"));
+
+    m_scanProfileButton = new QToolButton(toolbar);
+    m_scanProfileButton->setObjectName(QStringLiteral("scanGearButton"));
+    m_scanProfileButton->setAutoRaise(true);
+    m_scanProfileButton->setPopupMode(QToolButton::InstantPopup);
+    m_scanProfileButton->setMenu(m_scanProfileMenu);
+    optionsRow->addWidget(m_scanProfileButton);
+
     optionsRow->addStretch(1);
     toolbarLayout->addLayout(optionsRow);
 

@@ -89,6 +89,24 @@ void MainWindow::openSettingsDialog() {
 
 void MainWindow::reloadAdapters() {
     const auto list = m_scanner->adapters();
+    if (list.isEmpty()) {
+        updateScanFooter(uiText(m_settings, "Адаптеры еще не готовы, повторяю обновление...", "Adapters are not ready yet, retrying..."));
+        if (!m_adapterReloadRetryScheduled) {
+            m_adapterReloadRetryScheduled = true;
+            QPointer<MainWindow> guard(this);
+            QTimer::singleShot(900, this, [guard]() {
+                if (!guard) {
+                    return;
+                }
+                guard->m_adapterReloadRetryScheduled = false;
+                guard->reloadAdapters();
+            });
+        }
+        return;
+    }
+
+    m_adapterReloadRetryScheduled = false;
+    m_cachedAdapters = list;
     const auto previous = m_scanAdapterCombo->currentData().toString();
     m_scanAdapterCombo->clear();
     for (const auto& adapter : list) {
@@ -599,7 +617,7 @@ void MainWindow::rebuildScanTable() {
             safeRecord.ip,
             displayCellValue(m_settings, safeRecord.pingDisplay, QStringLiteral("[n/a]")),
             displayCellValue(m_settings, safeRecord.mac, QStringLiteral("-")),
-            displayCellValue(m_settings, safeRecord.vendor, QStringLiteral("unknown vendor")),
+            scanVendorCellText(m_settings, safeRecord),
             normalizedHostNameText(m_settings, safeRecord.hostName),
             normalizedWebDetectText(m_settings, safeRecord.webDetect),
             displayCellValue(m_settings, safeRecord.gateway, QStringLiteral("-")),
@@ -649,7 +667,7 @@ void MainWindow::rebuildScanTable() {
                            "Status: %1\nMAC: %2\nVendor: %3\nHostname: %4\nWeb: %5\nGateway IP: %6\nOpen ports: %7\nType: %8\nRoute: %9\nMask: %10%11")
                         .arg(localizedHostStatusText(m_settings, safeRecord.status))
                         .arg(displayCellValue(m_settings, safeRecord.mac, QStringLiteral("-")))
-                        .arg(displayCellValue(m_settings, safeRecord.vendor, QStringLiteral("unknown vendor")))
+                        .arg(scanVendorCellText(m_settings, safeRecord))
                         .arg(normalizedHostNameText(m_settings, safeRecord.hostName))
                         .arg(normalizedWebDetectText(m_settings, safeRecord.webDetect))
                         .arg(displayCellValue(m_settings, safeRecord.gateway, QStringLiteral("-")))
@@ -795,12 +813,41 @@ void MainWindow::toggleScanSortOrder() {
 }
 
 void MainWindow::refreshScanToolbarIcons() {
-    if (m_scanToolsButton == nullptr) {
+    const QColor iconColor = isLightTheme() ? QColor("#5f6a76") : QColor("#c1ccd8");
+    if (m_scanToolsButton != nullptr) {
+        m_scanToolsButton->setIcon(scanGearIcon(iconColor));
+        m_scanToolsButton->setIconSize(QSize(18, 18));
+    }
+    updateScanProfileButton();
+}
+
+void MainWindow::updateScanProfileButton() {
+    if (m_scanProfileButton == nullptr) {
         return;
     }
+    const QString profile = normalizedScanProfileForUi(m_settings != nullptr ? m_settings->scanProfile() : QStringLiteral("fast"));
     const QColor iconColor = isLightTheme() ? QColor("#5f6a76") : QColor("#c1ccd8");
-    m_scanToolsButton->setIcon(scanGearIcon(iconColor));
-    m_scanToolsButton->setIconSize(QSize(18, 18));
+    m_scanProfileButton->setIcon(scanGaugeIcon(iconColor, profile));
+    m_scanProfileButton->setIconSize(QSize(19, 19));
+    m_scanProfileButton->setToolTip(scanProfileDescription(m_settings, profile));
+    for (auto it = m_scanProfileActions.begin(); it != m_scanProfileActions.end(); ++it) {
+        if (it.value() != nullptr) {
+            QSignalBlocker blocker(it.value());
+            it.value()->setChecked(it.key() == profile);
+        }
+    }
+}
+
+void MainWindow::setScanProfile(const QString& profile) {
+    if (m_settings == nullptr) {
+        return;
+    }
+    const QString normalized = normalizedScanProfileForUi(profile);
+    m_settings->setValue(QStringLiteral("scan_profile"), normalized);
+    m_settings->setValue(QStringLiteral("scan_profile_user_selected"), true);
+    m_settings->save();
+    updateScanProfileButton();
+    updateScanFooter(uiText(m_settings, "Режим скана: %1", "Scan mode: %1").arg(scanProfileTitle(m_settings, normalized)));
 }
 
 int MainWindow::findRowByIp(QTableWidget* table, const QString& ip) {
@@ -820,8 +867,12 @@ void MainWindow::appendScanRecord(const nt::ScanRecord& record) {
 
     nt::ScanRecord displayRecord = record;
     bool updated = false;
+    bool hadPreviousRecord = false;
+    nt::ScanRecord previousRecord;
     for (auto& existing : m_scanRows) {
         if (existing.ip == record.ip) {
+            previousRecord = existing;
+            hadPreviousRecord = true;
             mergeScanDisplayFields(displayRecord, existing);
             existing = displayRecord;
             updated = true;
@@ -834,18 +885,13 @@ void MainWindow::appendScanRecord(const nt::ScanRecord& record) {
     if (m_scanCompareMode && m_scanCompareHasBaseline && !m_scanComparisonBaseline.contains(displayRecord.ip)) {
         m_scanNewIps.insert(displayRecord.ip);
     }
-    appendScanLogLine(QStringLiteral("%1 ip=%2 status=%3 ping=%4 mac=%5 vendor=%6 hostname=%7 web=%8 gateway=%9 ports=%10 type=%11")
-        .arg(updated ? QStringLiteral("update") : QStringLiteral("found"))
-        .arg(displayRecord.ip)
-        .arg(localizedHostStatusText(m_settings, displayRecord.status))
-        .arg(displayCellValue(m_settings, displayRecord.pingDisplay, QStringLiteral("[n/a]")))
-        .arg(displayCellValue(m_settings, displayRecord.mac, QStringLiteral("-")))
-        .arg(displayCellValue(m_settings, displayRecord.vendor, QStringLiteral("unknown vendor")))
-        .arg(normalizedHostNameText(m_settings, displayRecord.hostName))
-        .arg(normalizedWebDetectText(m_settings, displayRecord.webDetect))
-        .arg(displayCellValue(m_settings, displayRecord.gateway, QStringLiteral("-")))
-        .arg(scanPortCellText(m_settings, displayRecord.port))
-        .arg(normalizedTypeText(m_settings, displayRecord.typeHint)));
+    if (!updated || !hadPreviousRecord || scanRecordsHaveUsefulLogChange(previousRecord, displayRecord)) {
+        const QString details = scanRecordLogDetails(displayRecord);
+        appendScanLogLine(QStringLiteral("%1 ip=%2%3")
+            .arg(updated ? QStringLiteral("update") : QStringLiteral("found"))
+            .arg(displayRecord.ip)
+            .arg(details.isEmpty() ? QString() : QStringLiteral(" ") + details));
+    }
 
     int rowIndex = findRowByIp(m_scanTable, displayRecord.ip);
     if (rowIndex < 0) {
@@ -857,7 +903,7 @@ void MainWindow::appendScanRecord(const nt::ScanRecord& record) {
         displayRecord.ip,
         displayCellValue(m_settings, displayRecord.pingDisplay, QStringLiteral("[n/a]")),
         displayCellValue(m_settings, displayRecord.mac, QStringLiteral("-")),
-        displayCellValue(m_settings, displayRecord.vendor, QStringLiteral("unknown vendor")),
+        scanVendorCellText(m_settings, displayRecord),
         normalizedHostNameText(m_settings, displayRecord.hostName),
         normalizedWebDetectText(m_settings, displayRecord.webDetect),
         displayCellValue(m_settings, displayRecord.gateway, QStringLiteral("-")),
@@ -909,7 +955,7 @@ void MainWindow::appendScanRecord(const nt::ScanRecord& record) {
                        "Status: %1\nMAC: %2\nVendor: %3\nHostname: %4\nWeb: %5\nGateway IP: %6\nOpen ports: %7\nType: %8\nRoute: %9\nMask: %10%11")
                     .arg(localizedHostStatusText(m_settings, displayRecord.status))
                     .arg(displayCellValue(m_settings, displayRecord.mac, QStringLiteral("-")))
-                    .arg(displayCellValue(m_settings, displayRecord.vendor, QStringLiteral("unknown vendor")))
+                    .arg(scanVendorCellText(m_settings, displayRecord))
                     .arg(normalizedHostNameText(m_settings, displayRecord.hostName))
                     .arg(normalizedWebDetectText(m_settings, displayRecord.webDetect))
                     .arg(displayCellValue(m_settings, displayRecord.gateway, QStringLiteral("-")))
@@ -1076,7 +1122,11 @@ void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int duration
     m_scanRefreshMisses.clear();
     updateScanFooter(localizedScanPolishingText(m_settings));
     appendScanLogLine(QStringLiteral("main_scan_finished devices=%1 duration_ms=%2 polishing=true").arg(m_scanRows.size()).arg(durationMs));
-    QTimer::singleShot(2800, this, [this, finishedGeneration, durationMs]() {
+    const QString profile = m_settings != nullptr ? m_settings->scanProfile() : QStringLiteral("fast");
+    const int polishDisplayMs = profile == QStringLiteral("reliable")
+        ? 9800
+        : (profile == QStringLiteral("balanced") ? 5400 : 3400);
+    QTimer::singleShot(polishDisplayMs, this, [this, finishedGeneration, durationMs]() {
         if (finishedGeneration != m_currentScanGeneration
             || m_scanner == nullptr
             || m_scanner->isRunning()
@@ -1172,7 +1222,7 @@ void MainWindow::updateSelectedHostPanel() {
     m_hostLabels.value(QStringLiteral("ip"))->setText(item.ip);
     m_hostLabels.value(QStringLiteral("status"))->setText(localizedHostStatusIndicator(m_settings, item.status));
     m_hostLabels.value(QStringLiteral("mac"))->setText(displayCellValue(m_settings, item.mac, QStringLiteral("-")));
-    m_hostLabels.value(QStringLiteral("vendor"))->setText(displayCellValue(m_settings, item.vendor, QStringLiteral("-")));
+    m_hostLabels.value(QStringLiteral("vendor"))->setText(scanVendorCellText(m_settings, item, QStringLiteral("-")));
     m_hostLabels.value(QStringLiteral("type"))->setText(normalizedTypeText(m_settings, item.typeHint));
     m_hostLabels.value(QStringLiteral("name"))->setText(displayCellValue(m_settings, item.name, QStringLiteral("-")));
     m_hostLabels.value(QStringLiteral("gateway"))->setText(displayCellValue(m_settings, item.gateway, QStringLiteral("-")));

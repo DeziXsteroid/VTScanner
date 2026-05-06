@@ -15,7 +15,9 @@
 #include "widgets/CodeEditor.h"
 
 #include <algorithm>
+#include <cmath>
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QAbstractItemView>
 #include <QAbstractSocket>
@@ -87,6 +89,7 @@
 #include <QVariant>
 #include <QVBoxLayout>
 #include <QtConcurrent>
+#include <QtMath>
 
 namespace {
 
@@ -194,6 +197,28 @@ QString uiText(const nt::SettingsService* settings, const char* ru, const char* 
 
 bool isEnglishUi(const nt::SettingsService* settings) {
     return settings != nullptr && settings->language() == QStringLiteral("en");
+}
+
+QString scanProfileTitle(const nt::SettingsService* settings, const QString& profile) {
+    const QString normalized = normalizedScanProfileForUi(profile);
+    if (normalized == QStringLiteral("fast")) {
+        return uiText(settings, "Быстрый", "Fast");
+    }
+    if (normalized == QStringLiteral("reliable")) {
+        return uiText(settings, "Слабая сеть", "Weak network");
+    }
+    return uiText(settings, "Баланс", "Balanced");
+}
+
+QString scanProfileDescription(const nt::SettingsService* settings, const QString& profile) {
+    const QString normalized = normalizedScanProfileForUi(profile);
+    if (normalized == QStringLiteral("fast")) {
+        return uiText(settings, "Быстрый режим: хорошая сеть, короткие таймауты, быстрый polish.", "Fast mode: good network, short timeouts, quick polish.");
+    }
+    if (normalized == QStringLiteral("reliable")) {
+        return uiText(settings, "Слабая сеть: больше ожидания и повторов для полной информации.", "Weak network: longer waits and retries for complete information.");
+    }
+    return uiText(settings, "Баланс: средняя скорость и усиленный сбор информации.", "Balanced: medium speed with stronger information collection.");
 }
 
 QString localizedWindowTitle(const nt::SettingsService* settings) {
@@ -513,6 +538,36 @@ QIcon scanGearIcon(const QColor& color) {
     painter.drawEllipse(QPointF(0.0, 0.0), 5.3, 5.3);
     painter.setCompositionMode(QPainter::CompositionMode_Clear);
     painter.drawEllipse(QPointF(0.0, 0.0), 2.15, 2.15);
+    return QIcon(pixmap);
+}
+
+QIcon scanGaugeIcon(const QColor& color, const QString& profile) {
+    QPixmap pixmap(20, 20);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF arcRect(3.0, 4.0, 14.0, 14.0);
+    painter.setPen(QPen(QColor("#ff6b6b"), 1.9, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawArc(arcRect, 132 * 16, 42 * 16);
+    painter.setPen(QPen(QColor("#f2c94c"), 1.9, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.drawArc(arcRect, 82 * 16, 42 * 16);
+    painter.setPen(QPen(QColor("#6fd27f"), 1.9, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.drawArc(arcRect, 32 * 16, 42 * 16);
+
+    const QString normalized = normalizedScanProfileForUi(profile);
+    const qreal angleDeg = normalized == QStringLiteral("fast")
+        ? 37.0
+        : (normalized == QStringLiteral("reliable") ? 143.0 : 90.0);
+    const QPointF center(10.0, 14.0);
+    const qreal radians = qDegreesToRadians(angleDeg);
+    const QPointF needle(center.x() + std::cos(radians) * 6.2,
+                         center.y() - std::sin(radians) * 6.2);
+    painter.setPen(QPen(color, 1.55, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.drawLine(center, needle);
+    painter.setBrush(color);
+    painter.drawEllipse(center, 1.45, 1.45);
     return QIcon(pixmap);
 }
 
@@ -1079,8 +1134,101 @@ bool isUnknownVendorText(const QString& value) {
         || normalized == QStringLiteral("unknown vendor");
 }
 
+bool isWeakScanTypeText(const QString& value) {
+    const QString normalized = value.trimmed().toLower();
+    return normalized.isEmpty()
+        || normalized == QStringLiteral("-")
+        || normalized == QStringLiteral("[n/a]")
+        || normalized == QStringLiteral("?")
+        || normalized == QStringLiteral("icmp")
+        || normalized == QStringLiteral("udp")
+        || normalized == QStringLiteral("arp")
+        || normalized == QStringLiteral("mdns")
+        || normalized == QStringLiteral("ssdp")
+        || normalized == QStringLiteral("upnp")
+        || normalized == QStringLiteral("tcp");
+}
+
+QString scanVendorCellText(const nt::SettingsService* settings, const nt::ScanRecord& record, const QString& fallback = QStringLiteral("unknown vendor")) {
+    if (!isUnknownVendorText(record.hostName)) {
+        return normalizedHostNameText(settings, record.hostName);
+    }
+    if (!isUnknownVendorText(record.vendor)) {
+        return displayCellValue(settings, record.vendor, fallback);
+    }
+    const QString type = record.typeHint.trimmed().toLower();
+    if (type == QStringLiteral("apple")) {
+        return QStringLiteral("Apple device");
+    }
+    if (type == QStringLiteral("windows") || type == QStringLiteral("rdp")) {
+        return QStringLiteral("Windows host");
+    }
+    if (type == QStringLiteral("printer")) {
+        return QStringLiteral("Printer");
+    }
+    if (type == QStringLiteral("rtsp") || type == QStringLiteral("media")) {
+        return QStringLiteral("Media device");
+    }
+    if (type == QStringLiteral("gateway")) {
+        return QStringLiteral("Gateway");
+    }
+    if (type == QStringLiteral("iot")) {
+        return QStringLiteral("IoT device");
+    }
+    if (type == QStringLiteral("web")) {
+        return QStringLiteral("Web service");
+    }
+    return displayCellValue(settings, record.vendor, fallback);
+}
+
 bool isMissingScanValue(const QString& value) {
     return isUnknownVendorText(value);
+}
+
+QString scanLogValue(QString value) {
+    value = value.trimmed();
+    if (value.isEmpty()
+        || value == QStringLiteral("-")
+        || value == QStringLiteral("[n/a]")
+        || value.compare(QStringLiteral("none"), Qt::CaseInsensitive) == 0
+        || value.compare(QStringLiteral("отсутствует"), Qt::CaseInsensitive) == 0
+        || value.compare(QStringLiteral("not open"), Qt::CaseInsensitive) == 0
+        || value.compare(QStringLiteral("unknown vendor"), Qt::CaseInsensitive) == 0) {
+        return {};
+    }
+    return value;
+}
+
+QString scanRecordLogDetails(const nt::ScanRecord& record) {
+    QStringList fields;
+    const auto append = [&fields](const QString& key, const QString& value) {
+        const QString normalized = scanLogValue(value);
+        if (!normalized.isEmpty()) {
+            fields.append(QStringLiteral("%1=%2").arg(key, normalized));
+        }
+    };
+    append(QStringLiteral("ping"), record.pingDisplay);
+    append(QStringLiteral("mac"), record.mac);
+    append(QStringLiteral("name"), record.hostName);
+    if (scanLogValue(record.hostName).isEmpty()) {
+        append(QStringLiteral("vendor"), record.vendor);
+    }
+    append(QStringLiteral("ports"), record.port);
+    append(QStringLiteral("type"), record.typeHint);
+    append(QStringLiteral("web"), record.webDetect);
+    append(QStringLiteral("gateway"), record.gateway);
+    return fields.join(QLatin1Char(' '));
+}
+
+bool scanRecordsHaveUsefulLogChange(const nt::ScanRecord& before, const nt::ScanRecord& after) {
+    return scanLogValue(before.pingDisplay) != scanLogValue(after.pingDisplay)
+        || scanLogValue(before.mac) != scanLogValue(after.mac)
+        || scanLogValue(before.hostName) != scanLogValue(after.hostName)
+        || scanLogValue(before.vendor) != scanLogValue(after.vendor)
+        || scanLogValue(before.port) != scanLogValue(after.port)
+        || scanLogValue(before.typeHint) != scanLogValue(after.typeHint)
+        || scanLogValue(before.webDetect) != scanLogValue(after.webDetect)
+        || scanLogValue(before.gateway) != scanLogValue(after.gateway);
 }
 
 bool isValidGatewayText(const QString& value) {
@@ -1119,7 +1267,8 @@ void mergeScanDisplayFields(nt::ScanRecord& target, const nt::ScanRecord& source
         if (isMissingScanValue(target.speed) && !isMissingScanValue(source.speed)) {
             target.speed = source.speed;
         }
-        if (isMissingScanValue(target.typeHint) && !isMissingScanValue(source.typeHint)) {
+        if ((isMissingScanValue(target.typeHint) || (isWeakScanTypeText(target.typeHint) && !isWeakScanTypeText(source.typeHint)))
+            && !isMissingScanValue(source.typeHint)) {
             target.typeHint = source.typeHint;
         }
     } else if (target.status != nt::HostStatus::Online && source.status == nt::HostStatus::Online) {
@@ -1135,7 +1284,8 @@ void mergeScanDisplayFields(nt::ScanRecord& target, const nt::ScanRecord& source
     if (isMissingScanValue(target.webDetect) && !isMissingScanValue(source.webDetect)) {
         target.webDetect = source.webDetect;
     }
-    if (isMissingScanValue(target.typeHint) && !isMissingScanValue(source.typeHint)) {
+    if ((isMissingScanValue(target.typeHint) || (isWeakScanTypeText(target.typeHint) && !isWeakScanTypeText(source.typeHint)))
+        && !isMissingScanValue(source.typeHint)) {
         target.typeHint = source.typeHint;
     }
 
@@ -1169,23 +1319,17 @@ public:
         const QString language = settings != nullptr ? settings->language() : QStringLiteral("ru");
         setWindowTitle(uiText(language, "Настройки", "Settings"));
         setModal(true);
-        resize(560, 320);
+        resize(560, 300);
 
         auto* root = new QVBoxLayout(this);
-        root->setSpacing(8);
+        root->setSpacing(6);
         auto* scanForm = new QFormLayout();
+        scanForm->setVerticalSpacing(4);
 
         m_workersSpin = new QSpinBox(this);
         m_workersSpin->setRange(8, 128);
         m_workersSpin->setValue(settings->scanWorkers());
         scanForm->addRow(uiText(language, "Потоки сканирования", "Scan workers"), m_workersSpin);
-
-        m_scanProfileCombo = new QComboBox(this);
-        m_scanProfileCombo->addItem(uiText(language, "Быстро", "Fast"), QStringLiteral("fast"));
-        m_scanProfileCombo->addItem(uiText(language, "Баланс", "Balanced"), QStringLiteral("balanced"));
-        m_scanProfileCombo->addItem(uiText(language, "Надежно / слабая сеть", "Reliable / weak network"), QStringLiteral("reliable"));
-        m_scanProfileCombo->setCurrentIndex(qMax(0, m_scanProfileCombo->findData(settings->scanProfile())));
-        scanForm->addRow(uiText(language, "Профиль сканирования", "Scan profile"), m_scanProfileCombo);
 
         m_autoScanIntervalSpin = new QSpinBox(this);
         m_autoScanIntervalSpin->setRange(5, 3600);
@@ -1208,18 +1352,15 @@ public:
         m_scanOnStartupCheck->setChecked(settings->value(QStringLiteral("scan_on_startup"), false).toBool(false));
 
         auto refreshAutoWorkersState = [this, language]() {
-            const int workers = autoScanWorkerCountForProfile(m_scanProfileCombo != nullptr ? m_scanProfileCombo->currentData().toString() : QStringLiteral("balanced"));
+            const int workers = autoScanWorkerCountForProfile(m_settings != nullptr ? m_settings->scanProfile() : QStringLiteral("fast"));
             if (m_autoWorkersCheck != nullptr) {
-                m_autoWorkersCheck->setToolTip(uiText(language, "Авто режим выберет %1 потоков для текущего профиля.", "Auto mode will use %1 workers for the current profile.").arg(workers));
+                m_autoWorkersCheck->setToolTip(uiText(language, "Авто режим выберет %1 потоков для режима скана.", "Auto mode will use %1 workers for the scan mode.").arg(workers));
             }
             if (m_workersSpin != nullptr && m_autoWorkersCheck != nullptr) {
                 m_workersSpin->setEnabled(!m_autoWorkersCheck->isChecked());
             }
         };
         connect(m_autoWorkersCheck, &QCheckBox::toggled, this, [refreshAutoWorkersState](bool) {
-            refreshAutoWorkersState();
-        });
-        connect(m_scanProfileCombo, &QComboBox::currentIndexChanged, this, [refreshAutoWorkersState](int) {
             refreshAutoWorkersState();
         });
         refreshAutoWorkersState();
@@ -1240,7 +1381,6 @@ public:
         checks->addWidget(m_backgroundRefreshCheck);
         checks->addWidget(m_scanOnStartupCheck);
         checks->addStretch(1);
-        checks->addWidget(openLogsButton);
         root->addLayout(checks);
 
         auto* uiForm = new QFormLayout();
@@ -1266,13 +1406,19 @@ public:
         uiForm->addRow(uiText(language, "SSH / Telnet цвет", "SSH / Telnet color"), m_terminalColorCombo);
         root->addLayout(uiForm);
 
+        root->addStretch(1);
+        auto* logsRow = new QHBoxLayout();
+        logsRow->setContentsMargins(0, 0, 0, 0);
+        logsRow->addStretch(1);
+        logsRow->addWidget(openLogsButton);
+        root->addLayout(logsRow);
+
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
         root->addWidget(buttons);
 
         connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
             m_settings->setValue(QStringLiteral("scan_workers"), m_workersSpin->value());
             m_settings->setValue(QStringLiteral("scan_auto_workers"), m_autoWorkersCheck->isChecked());
-            m_settings->setValue(QStringLiteral("scan_profile"), m_scanProfileCombo->currentData().toString());
             m_settings->setValue(QStringLiteral("scan_background_refresh"), m_backgroundRefreshCheck->isChecked());
             m_settings->setValue(QStringLiteral("scan_on_startup"), m_scanOnStartupCheck->isChecked());
             m_settings->setValue(QStringLiteral("auto_scan_interval_sec"), m_autoScanIntervalSpin->value());
@@ -1288,7 +1434,6 @@ public:
 private:
     nt::SettingsService* m_settings {nullptr};
     QSpinBox* m_workersSpin {nullptr};
-    QComboBox* m_scanProfileCombo {nullptr};
     QCheckBox* m_autoWorkersCheck {nullptr};
     QCheckBox* m_backgroundRefreshCheck {nullptr};
     QCheckBox* m_scanOnStartupCheck {nullptr};

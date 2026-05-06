@@ -5,6 +5,7 @@
 
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QHostAddress>
@@ -15,6 +16,7 @@
 #include <QNetworkInterface>
 #include <QPointer>
 #include <QProcess>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QThread>
@@ -77,6 +79,8 @@ QString systemCommandPath(const QString& program) {
     if (program == QStringLiteral("arp")) return QStringLiteral("/usr/sbin/arp");
     if (program == QStringLiteral("netstat")) return QStringLiteral("/usr/sbin/netstat");
     if (program == QStringLiteral("route")) return QStringLiteral("/sbin/route");
+    if (program == QStringLiteral("ipconfig")) return QStringLiteral("/usr/sbin/ipconfig");
+    if (program == QStringLiteral("smbutil")) return QStringLiteral("/usr/bin/smbutil");
     if (program == QStringLiteral("dns-sd")) return QStringLiteral("/usr/bin/dns-sd");
     if (program == QStringLiteral("dscacheutil")) return QStringLiteral("/usr/bin/dscacheutil");
     if (program == QStringLiteral("ssh")) return QStringLiteral("/usr/bin/ssh");
@@ -308,7 +312,23 @@ bool isMissingPingDisplay(const QString& value) {
     return normalized.isEmpty()
         || normalized == QStringLiteral("-")
         || normalized == QStringLiteral("[n/a]")
-        || normalized == QStringLiteral("?");
+        || normalized == QStringLiteral("?")
+        || normalized == QStringLiteral("online");
+}
+
+bool isWeakTypeHint(const QString& value) {
+    const QString normalized = value.trimmed().toLower();
+    return normalized.isEmpty()
+        || normalized == QStringLiteral("-")
+        || normalized == QStringLiteral("[n/a]")
+        || normalized == QStringLiteral("?")
+        || normalized == QStringLiteral("icmp")
+        || normalized == QStringLiteral("udp")
+        || normalized == QStringLiteral("arp")
+        || normalized == QStringLiteral("mdns")
+        || normalized == QStringLiteral("ssdp")
+        || normalized == QStringLiteral("upnp")
+        || normalized == QStringLiteral("tcp");
 }
 
 void mergeHelpfulScanFields(ScanRecord& target, const ScanRecord& source) {
@@ -333,7 +353,8 @@ void mergeHelpfulScanFields(ScanRecord& target, const ScanRecord& source) {
         if (isUnknownVendorLabel(target.speed) && !isUnknownVendorLabel(source.speed)) {
             target.speed = source.speed;
         }
-        if (isUnknownVendorLabel(target.typeHint) && !isUnknownVendorLabel(source.typeHint)) {
+        if ((isUnknownVendorLabel(target.typeHint) || (isWeakTypeHint(target.typeHint) && !isWeakTypeHint(source.typeHint)))
+            && !isUnknownVendorLabel(source.typeHint)) {
             target.typeHint = source.typeHint;
         }
     } else if (target.status != HostStatus::Online && source.status == HostStatus::Online) {
@@ -349,7 +370,8 @@ void mergeHelpfulScanFields(ScanRecord& target, const ScanRecord& source) {
     if (isUnknownVendorLabel(target.webDetect) && !isUnknownVendorLabel(source.webDetect)) {
         target.webDetect = source.webDetect;
     }
-    if (isUnknownVendorLabel(target.typeHint) && !isUnknownVendorLabel(source.typeHint)) {
+    if ((isUnknownVendorLabel(target.typeHint) || (isWeakTypeHint(target.typeHint) && !isWeakTypeHint(source.typeHint)))
+        && !isUnknownVendorLabel(source.typeHint)) {
         target.typeHint = source.typeHint;
     }
 
@@ -485,6 +507,32 @@ bool isEmptySsdpResolution(const SsdpResolution& resolution) {
         && resolution.webByIp.isEmpty();
 }
 
+void mergeDeviceResolution(SsdpResolution& target, const SsdpResolution& source) {
+    for (auto it = source.namesByIp.constBegin(); it != source.namesByIp.constEnd(); ++it) {
+        if (!target.namesByIp.contains(it.key())) {
+            target.namesByIp.insert(it.key(), it.value());
+        }
+    }
+    for (auto it = source.typesByIp.constBegin(); it != source.typesByIp.constEnd(); ++it) {
+        if (!target.typesByIp.contains(it.key())) {
+            target.typesByIp.insert(it.key(), it.value());
+        }
+    }
+    for (auto it = source.webByIp.constBegin(); it != source.webByIp.constEnd(); ++it) {
+        if (!target.webByIp.contains(it.key())) {
+            target.webByIp.insert(it.key(), it.value());
+        }
+    }
+    for (auto it = source.portsByIp.constBegin(); it != source.portsByIp.constEnd(); ++it) {
+        if (!target.portsByIp.contains(it.key())) {
+            target.portsByIp.insert(it.key(), it.value());
+        }
+    }
+    for (const auto& ip : source.activeIps) {
+        target.activeIps.insert(ip);
+    }
+}
+
 struct ScanTiming {
     int pingTimeoutMs {650};
     int retryWindowMs {3200};
@@ -511,23 +559,23 @@ QString normalizedScanProfile(QString profile) {
 ScanTiming scanTimingForProfile(const QString& profile) {
     const QString normalized = normalizedScanProfile(profile);
     if (normalized == QStringLiteral("fast")) {
-        return ScanTiming{450, 2400, 220, 240, 220, 1};
+        return ScanTiming{520, 2600, 190, 260, 230, 1};
     }
     if (normalized == QStringLiteral("reliable")) {
-        return ScanTiming{1300, 5600, 320, 600, 560, 5};
+        return ScanTiming{1500, 7200, 360, 760, 700, 4};
     }
-    return ScanTiming{800, 3800, 260, 390, 360, 2};
+    return ScanTiming{900, 4600, 240, 480, 420, 2};
 }
 
 QList<quint16> probePortsForProfile(const QString& profile) {
     const QString normalized = normalizedScanProfile(profile);
     if (normalized == QStringLiteral("fast")) {
-        return {22, 23, 80, 443, 445, 548, 554, 8080, 62078};
+        return {22, 23, 53, 80, 135, 139, 443, 445, 515, 548, 554, 631, 8080, 8443, 9100, 62078};
     }
     if (normalized == QStringLiteral("reliable")) {
-        return {22, 23, 80, 443, 445, 548, 554, 3389, 5000, 5001, 7000, 8080, 8443, 9100, 62078};
+        return {21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 389, 443, 445, 515, 548, 554, 587, 631, 993, 995, 1433, 1723, 1883, 2049, 2869, 3306, 3389, 3689, 5000, 5001, 5357, 5432, 5900, 6379, 7000, 8000, 8008, 8060, 8080, 8081, 8090, 8443, 8554, 8883, 8888, 9000, 9090, 9100, 9443, 10000, 49152, 62078};
     }
-    return {22, 23, 80, 443, 445, 548, 554, 3389, 5000, 5001, 7000, 8080, 8443, 9100, 62078};
+    return {22, 23, 53, 80, 111, 135, 139, 443, 445, 515, 548, 554, 631, 1433, 1883, 2869, 3389, 3689, 5000, 5001, 5357, 5900, 7000, 8000, 8008, 8060, 8080, 8081, 8090, 8443, 8554, 8888, 9000, 9090, 9100, 9443, 62078};
 }
 
 int workerCountForProfile(int requestedWorkers, const QString& profile) {
@@ -589,18 +637,72 @@ QStringList priorityBonjourServiceTypes() {
     };
 }
 
+QStringList advertisedBonjourServiceTypes() {
+#ifdef Q_OS_MACOS
+    static QStringList cached;
+    static bool loaded = false;
+    if (loaded) {
+        return cached;
+    }
+    loaded = true;
+
+    const QString output = runTimedCommandCapture(
+        QStringLiteral("dns-sd"),
+        {QStringLiteral("-Q"), QStringLiteral("_services._dns-sd._udp.local"), QStringLiteral("PTR")},
+        1800,
+        true
+    );
+    static const QRegularExpression serviceRe(QStringLiteral("\\b(_[A-Za-z0-9][A-Za-z0-9_.\\-]*\\._(?:tcp|udp))\\.local\\.?"),
+                                              QRegularExpression::CaseInsensitiveOption);
+    auto it = serviceRe.globalMatch(output);
+    while (it.hasNext()) {
+        QString service = it.next().captured(1).toLower();
+        if (!service.isEmpty() && !cached.contains(service)) {
+            cached.append(service);
+        }
+    }
+    return cached;
+#else
+    return {};
+#endif
+}
+
 QStringList allBonjourServiceTypes() {
     QStringList services = priorityBonjourServiceTypes();
     const QStringList extraServices {
         QStringLiteral("_smb._tcp"),
+        QStringLiteral("_afpovertcp._tcp"),
         QStringLiteral("_ipp._tcp"),
+        QStringLiteral("_ipps._tcp"),
         QStringLiteral("_printer._tcp"),
+        QStringLiteral("_pdl-datastream._tcp"),
+        QStringLiteral("_print-caps._tcp"),
         QStringLiteral("_scanner._tcp"),
+        QStringLiteral("_uscan._tcp"),
+        QStringLiteral("_uscans._tcp"),
+        QStringLiteral("_privet._tcp"),
+        QStringLiteral("_http-alt._tcp"),
+        QStringLiteral("_googlecast._tcp"),
+        QStringLiteral("_mi-connect._udp"),
+        QStringLiteral("_matter._tcp"),
+        QStringLiteral("_matterc._udp"),
+        QStringLiteral("_spotify-connect._tcp"),
+        QStringLiteral("_sonos._tcp"),
+        QStringLiteral("_sftp-ssh._tcp"),
+        QStringLiteral("_rdp._tcp"),
         QStringLiteral("_rtsp._tcp"),
         QStringLiteral("_hap._tcp"),
+        QStringLiteral("_homekit._tcp"),
+        QStringLiteral("_touch-able._tcp"),
+        QStringLiteral("_apple-pairable._tcp"),
         QStringLiteral("_sleep-proxy._udp"),
     };
     for (const auto& service : extraServices) {
+        if (!services.contains(service)) {
+            services.append(service);
+        }
+    }
+    for (const auto& service : advertisedBonjourServiceTypes()) {
         if (!services.contains(service)) {
             services.append(service);
         }
@@ -631,7 +733,9 @@ void rememberResolvedName(const QString& ip, const QString& mac, const QString& 
     const QString normalizedMac = normalizeMacString(mac);
     QMutexLocker locker(&resolvedNameCacheMutex());
     if (!ip.trimmed().isEmpty()) {
-        resolvedNameByIpCache().insert(ip.trimmed(), CachedResolvedName{normalizedName, normalizedMac});
+        const QString key = ip.trimmed();
+        const CachedResolvedName next {normalizedName, normalizedMac == QStringLiteral("-") ? QString() : normalizedMac};
+        resolvedNameByIpCache().insert(key, next);
     }
     if (!normalizedMac.isEmpty() && normalizedMac != QStringLiteral("-")) {
         resolvedNameByMacCache().insert(normalizedMac, normalizedName);
@@ -676,6 +780,12 @@ QString cachedResolvedName(const QString& ip, const QString& mac) {
     return ipFallback;
 }
 
+BonjourResolution collectMdnsNamesWithSocket(const QSet<QString>& scannedIps, const QStringList& serviceTypes, const QString& adapterId, int timeoutMs);
+QString resolveMdnsPtrName(const QString& ip, const QString& adapterId, int timeoutMs);
+QString resolveNetbiosName(const QString& ip, int timeoutMs);
+QString resolveLlmnrPtrName(const QString& ip, int timeoutMs);
+QString resolveSmbStatusName(const QString& ip, int timeoutMs);
+
 QString extractResolvedNameFromPingOutput(const QString& output, const QString& ip) {
 #ifdef Q_OS_WIN
     static const QRegularExpression headerRe(
@@ -699,6 +809,51 @@ QString extractResolvedNameFromPingOutput(const QString& output, const QString& 
     return {};
 }
 
+bool isLikelyDnsHostName(QString value, const QString& ip) {
+    value = normalizeResolvedName(value, ip);
+    if (value.isEmpty()) {
+        return false;
+    }
+    const QString lower = value.toLower();
+    if (lower == QStringLiteral("dig")
+        || lower == QStringLiteral("nslookup")
+        || lower == QStringLiteral("server")
+        || lower == QStringLiteral("address")
+        || lower == QStringLiteral("timeout")
+        || lower == QStringLiteral("nxdomain")
+        || lower == QStringLiteral("status")
+        || lower == QStringLiteral("query")
+        || lower == QStringLiteral("answer")
+        || lower == QStringLiteral("authority")
+        || lower == QStringLiteral("additional")
+        || lower == QStringLiteral("opcode")
+        || lower == QStringLiteral("flags")
+        || lower == QStringLiteral("localhost")
+        || lower == QStringLiteral("localdomain")
+        || lower.contains(QStringLiteral("timed out"))
+        || lower.contains(QStringLiteral("no servers"))
+        || lower.contains(QStringLiteral("global options"))
+        || lower.contains(QStringLiteral("communications error"))
+        || lower.contains(QStringLiteral("can't find"))
+        || lower.contains(QStringLiteral("not found"))
+        || lower.contains(QStringLiteral("answer:"))
+        || lower.contains(QStringLiteral("authority:"))
+        || lower.contains(QStringLiteral("opcode:"))
+        || lower.contains(QStringLiteral("status:"))
+        || lower.contains(QStringLiteral("<<>>"))
+        || lower.startsWith(QLatin1Char(';'))) {
+        return false;
+    }
+    static const QRegularExpression hostRe(QStringLiteral("^[A-Za-z0-9_][A-Za-z0-9_.\\-]{1,126}\\.?$"));
+    if (!hostRe.match(value).hasMatch()) {
+        return false;
+    }
+    if (!value.contains(QLatin1Char('.')) && value.size() < 3) {
+        return false;
+    }
+    return true;
+}
+
 QString firstResolvedNameFromLines(const QString& output, const QString& ip) {
     const QStringList lines = output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     for (const QString& rawLine : lines) {
@@ -710,8 +865,8 @@ QString firstResolvedNameFromLines(const QString& output, const QString& ip) {
             || line.contains(QStringLiteral("can't find"), Qt::CaseInsensitive)) {
             continue;
         }
-        const QString normalized = normalizeResolvedName(line.section(QLatin1Char('\t'), 0, 0), ip);
-        if (!normalized.isEmpty()) {
+        const QString normalized = normalizeResolvedName(line.section(QLatin1Char('\t'), 0, 0).section(QLatin1Char(' '), 0, 0), ip);
+        if (isLikelyDnsHostName(normalized, ip)) {
             return normalized;
         }
     }
@@ -726,11 +881,167 @@ QString parsePtrToolOutput(const QString& output, const QString& ip) {
     const auto pointerMatch = pointerRe.match(output);
     if (pointerMatch.hasMatch()) {
         const QString normalized = normalizeResolvedName(pointerMatch.captured(1), ip);
+        if (isLikelyDnsHostName(normalized, ip)) {
+            return normalized;
+        }
+    }
+
+    return {};
+}
+
+void appendDnsU16(QByteArray& packet, quint16 value);
+quint16 readDnsU16(const QByteArray& packet, int offset);
+QByteArray encodeDnsName(QString name);
+QString firstPtrNameFromDnsPacket(const QByteArray& packet, const QString& ip);
+QString reverseMdnsNameForIp(const QString& ip);
+
+QStringList localDnsServersForAdapter(const QString& adapterId) {
+    QStringList servers;
+#ifdef Q_OS_MACOS
+    if (!adapterId.trimmed().isEmpty()) {
+        const QString output = runTimedCommandCapture(QStringLiteral("ipconfig"), {QStringLiteral("getpacket"), adapterId.trimmed()}, 900, true);
+        static const QRegularExpression dnsRe(QStringLiteral("domain_name_server\\s+\\([^)]*\\):\\s+\\{([^}]+)\\}"),
+                                              QRegularExpression::CaseInsensitiveOption);
+        const auto match = dnsRe.match(output);
+        if (match.hasMatch()) {
+            const QStringList values = match.captured(1).split(QRegularExpression(QStringLiteral("[,\\s]+")), Qt::SkipEmptyParts);
+            for (const auto& value : values) {
+                const QString ip = value.trimmed();
+                if (QHostAddress(ip).protocol() == QAbstractSocket::IPv4Protocol && !servers.contains(ip)) {
+                    servers.append(ip);
+                }
+            }
+        }
+        static const QRegularExpression routerRe(QStringLiteral("router\\s+\\([^)]*\\):\\s+\\{([^}]+)\\}"),
+                                                 QRegularExpression::CaseInsensitiveOption);
+        const auto routerMatch = routerRe.match(output);
+        if (routerMatch.hasMatch()) {
+            const QStringList values = routerMatch.captured(1).split(QRegularExpression(QStringLiteral("[,\\s]+")), Qt::SkipEmptyParts);
+            for (const auto& value : values) {
+                const QString ip = value.trimmed();
+                if (isValidGatewayIp(ip) && !servers.contains(ip)) {
+                    servers.append(ip);
+                }
+            }
+        }
+    }
+#else
+    QFile resolv(QStringLiteral("/etc/resolv.conf"));
+    if (resolv.open(QIODevice::ReadOnly)) {
+        static const QRegularExpression nameserverRe(QStringLiteral("^\\s*nameserver\\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)"),
+                                                     QRegularExpression::MultilineOption);
+        const QString text = QString::fromUtf8(resolv.readAll());
+        auto it = nameserverRe.globalMatch(text);
+        while (it.hasNext()) {
+            const QString ip = it.next().captured(1);
+            if (!servers.contains(ip)) {
+                servers.append(ip);
+            }
+        }
+    }
+#endif
+    return servers;
+}
+
+QByteArray buildDnsPtrQuery(const QString& ip, quint16 transactionId) {
+    const QString reverseName = reverseMdnsNameForIp(ip);
+    if (reverseName.isEmpty()) {
+        return {};
+    }
+    QByteArray packet;
+    packet.reserve(96);
+    appendDnsU16(packet, transactionId);
+    appendDnsU16(packet, 0x0100);
+    appendDnsU16(packet, 1);
+    appendDnsU16(packet, 0);
+    appendDnsU16(packet, 0);
+    appendDnsU16(packet, 0);
+    packet.append(encodeDnsName(reverseName));
+    appendDnsU16(packet, 12);
+    appendDnsU16(packet, 1);
+    return packet;
+}
+
+QString resolvePtrNameViaUdpDns(const QString& ip, const QString& server, int timeoutMs) {
+    if (QHostAddress(ip).protocol() != QAbstractSocket::IPv4Protocol
+        || QHostAddress(server).protocol() != QAbstractSocket::IPv4Protocol) {
+        return {};
+    }
+
+    QUdpSocket socket;
+    if (!socket.bind(QHostAddress::AnyIPv4, 0)) {
+        return {};
+    }
+    const quint16 transactionId = static_cast<quint16>((QDateTime::currentMSecsSinceEpoch() ^ qHash(ip) ^ qHash(server)) & 0xffff);
+    const QByteArray query = buildDnsPtrQuery(ip, transactionId);
+    if (query.isEmpty()) {
+        return {};
+    }
+
+    const int boundedTimeout = qBound(260, timeoutMs, 1400);
+    socket.writeDatagram(query, QHostAddress(server), 53);
+    QElapsedTimer timer;
+    timer.start();
+    bool resent = false;
+    while (timer.elapsed() < boundedTimeout) {
+        if (!resent && timer.elapsed() > boundedTimeout / 2) {
+            socket.writeDatagram(query, QHostAddress(server), 53);
+            resent = true;
+        }
+        const int remaining = qMax(1, boundedTimeout - static_cast<int>(timer.elapsed()));
+        if (!socket.waitForReadyRead(qMin(90, remaining))) {
+            continue;
+        }
+        while (socket.hasPendingDatagrams()) {
+            QByteArray datagram;
+            datagram.resize(static_cast<int>(socket.pendingDatagramSize()));
+            QHostAddress sender;
+            socket.readDatagram(datagram.data(), datagram.size(), &sender);
+            if (sender.toString() != server || datagram.size() < 12 || readDnsU16(datagram, 0) != transactionId) {
+                continue;
+            }
+            const QString name = firstPtrNameFromDnsPacket(datagram, ip);
+            if (isLikelyDnsHostName(name, ip)) {
+                return normalizeResolvedName(name, ip);
+            }
+        }
+    }
+    return {};
+}
+
+QString resolvePtrNameViaServer(const QString& ip, const QString& server, int timeoutMs) {
+    if (QHostAddress(ip).protocol() != QAbstractSocket::IPv4Protocol
+        || QHostAddress(server).protocol() != QAbstractSocket::IPv4Protocol) {
+        return {};
+    }
+
+    const QString udpName = resolvePtrNameViaUdpDns(ip, server, timeoutMs);
+    if (!udpName.isEmpty()) {
+        return udpName;
+    }
+
+    const QString dig = executableCommandPath(QStringLiteral("dig"));
+    if (!dig.isEmpty()) {
+        const QString output = runTimedCommandCapture(
+            dig,
+            {QStringLiteral("@%1").arg(server), QStringLiteral("+time=1"), QStringLiteral("+tries=1"), QStringLiteral("-x"), ip, QStringLiteral("+short")},
+            qBound(500, timeoutMs, 1400),
+            true
+        );
+        const QString normalized = firstResolvedNameFromLines(output, ip);
         if (!normalized.isEmpty()) {
             return normalized;
         }
     }
 
+    const QString nslookup = executableCommandPath(QStringLiteral("nslookup"));
+    if (!nslookup.isEmpty()) {
+        const QString output = runTimedCommandCapture(nslookup, {ip, server}, qBound(500, timeoutMs, 1400), true);
+        const QString normalized = parsePtrToolOutput(output, ip);
+        if (!normalized.isEmpty()) {
+            return normalized;
+        }
+    }
     return {};
 }
 
@@ -798,6 +1109,21 @@ QString reverseLookupName(const QString& ip) {
         }
     }
 #endif
+    const QString mdnsName = resolveMdnsPtrName(ip, QString(), 520);
+    if (!mdnsName.isEmpty()) {
+        return mdnsName;
+    }
+
+    const QString netbiosName = resolveNetbiosName(ip, 520);
+    if (!netbiosName.isEmpty()) {
+        return netbiosName;
+    }
+
+    const QString llmnrName = resolveLlmnrPtrName(ip, 520);
+    if (!llmnrName.isEmpty()) {
+        return llmnrName;
+    }
+
     const QString toolName = resolvePtrNameWithTool(ip);
     if (!toolName.isEmpty()) {
         return toolName;
@@ -810,6 +1136,43 @@ QString reverseLookupName(const QString& ip) {
             return normalized;
         }
     }
+    return {};
+}
+
+QString resolveHostNameDeep(const QString& ip, const QString& adapterId, int timeoutMs) {
+    const QString reverseName = reverseLookupName(ip);
+    if (!reverseName.isEmpty()) {
+        return reverseName;
+    }
+
+    const int boundedTimeout = qBound(280, timeoutMs, 1800);
+    for (const auto& server : localDnsServersForAdapter(adapterId)) {
+        const QString dnsName = resolvePtrNameViaServer(ip, server, boundedTimeout);
+        if (!dnsName.isEmpty()) {
+            return dnsName;
+        }
+    }
+
+    const QString mdnsName = resolveMdnsPtrName(ip, adapterId, boundedTimeout);
+    if (!mdnsName.isEmpty()) {
+        return mdnsName;
+    }
+
+    const QString netbiosName = resolveNetbiosName(ip, qBound(260, boundedTimeout, 900));
+    if (!netbiosName.isEmpty()) {
+        return netbiosName;
+    }
+
+    const QString llmnrName = resolveLlmnrPtrName(ip, qBound(260, boundedTimeout, 900));
+    if (!llmnrName.isEmpty()) {
+        return llmnrName;
+    }
+
+    const QString smbName = resolveSmbStatusName(ip, qBound(350, boundedTimeout, 1200));
+    if (!smbName.isEmpty()) {
+        return smbName;
+    }
+
     return {};
 }
 
@@ -944,33 +1307,82 @@ QString formatPingDisplay(const QString& value) {
     return QStringLiteral("%1 ms").arg(qMax(1, qRound(pingMs)));
 }
 
-QString detectTypeHint(const QStringList& openPorts, bool pingSuccess, bool onLink) {
+QString detectTypeHint(const QStringList& openPorts,
+                       bool pingSuccess,
+                       bool onLink,
+                       const QString& hostName = QString(),
+                       const QString& vendor = QString(),
+                       const QString& mac = QString()) {
     const auto hasPort = [&](const QString& expected) {
         return std::any_of(openPorts.begin(), openPorts.end(), [&](const QString& value) {
             return value.trimmed().compare(expected, Qt::CaseInsensitive) == 0;
         });
     };
 
-    if (hasPort(QStringLiteral("9100"))) {
+    const QString text = QStringList{hostName, vendor}.join(QLatin1Char(' ')).toLower();
+    const QString normalizedMac = normalizeMacString(mac);
+
+    if (hasPort(QStringLiteral("9100")) || hasPort(QStringLiteral("631")) || hasPort(QStringLiteral("515"))
+        || text.contains(QStringLiteral("printer"))
+        || text.contains(QStringLiteral("hp"))
+        || text.contains(QStringLiteral("canon"))
+        || text.contains(QStringLiteral("epson"))
+        || text.contains(QStringLiteral("brother"))) {
         return QStringLiteral("printer");
     }
-    if (hasPort(QStringLiteral("554"))) {
+    if (hasPort(QStringLiteral("554")) || hasPort(QStringLiteral("8554"))
+        || text.contains(QStringLiteral("camera"))
+        || text.contains(QStringLiteral("rtsp"))) {
         return QStringLiteral("rtsp");
-    }
-    if (hasPort(QStringLiteral("445")) || hasPort(QStringLiteral("139"))) {
-        return QStringLiteral("smb");
-    }
-    if (hasPort(QStringLiteral("548")) || hasPort(QStringLiteral("62078"))) {
-        return QStringLiteral("apple");
-    }
-    if (hasPort(QStringLiteral("5000")) || hasPort(QStringLiteral("5001")) || hasPort(QStringLiteral("7000"))) {
-        return QStringLiteral("media");
-    }
-    if (hasPort(QStringLiteral("443")) || hasPort(QStringLiteral("8443")) || hasPort(QStringLiteral("80")) || hasPort(QStringLiteral("8080"))) {
-        return QStringLiteral("web");
     }
     if (hasPort(QStringLiteral("3389"))) {
         return QStringLiteral("rdp");
+    }
+    if (hasPort(QStringLiteral("135")) || hasPort(QStringLiteral("139")) || hasPort(QStringLiteral("445"))
+        || text.contains(QStringLiteral("windows"))
+        || text.startsWith(QStringLiteral("win-"))
+        || text.startsWith(QStringLiteral("desktop-"))) {
+        return QStringLiteral("windows");
+    }
+    if (hasPort(QStringLiteral("548")) || hasPort(QStringLiteral("62078")) || hasPort(QStringLiteral("3689"))
+        || text.contains(QStringLiteral("iphone"))
+        || text.contains(QStringLiteral("ipad"))
+        || text.contains(QStringLiteral("macbook"))
+        || text.contains(QStringLiteral("mac mini"))
+        || text.contains(QStringLiteral("imac"))
+        || text.contains(QStringLiteral("apple"))
+        || normalizedMac.startsWith(QStringLiteral("f0:c7:25"))
+        || normalizedMac.startsWith(QStringLiteral("1c:f6:4c"))) {
+        return QStringLiteral("apple");
+    }
+    if ((hasPort(QStringLiteral("445")) && (hasPort(QStringLiteral("5000")) || hasPort(QStringLiteral("5001"))))
+        || text.contains(QStringLiteral("synology"))
+        || text.contains(QStringLiteral("qnap"))
+        || text.contains(QStringLiteral("nas"))) {
+        return QStringLiteral("nas");
+    }
+    if (hasPort(QStringLiteral("5000")) || hasPort(QStringLiteral("5001")) || hasPort(QStringLiteral("7000"))
+        || hasPort(QStringLiteral("8008")) || hasPort(QStringLiteral("8060"))
+        || text.contains(QStringLiteral("airplay"))
+        || text.contains(QStringLiteral("chromecast"))
+        || text.contains(QStringLiteral("media"))) {
+        return QStringLiteral("media");
+    }
+    if (hasPort(QStringLiteral("53"))
+        || text.contains(QStringLiteral("router"))
+        || text.contains(QStringLiteral("gateway"))
+        || text.contains(QStringLiteral("wfadevice"))) {
+        return QStringLiteral("gateway");
+    }
+    if (hasPort(QStringLiteral("1883")) || hasPort(QStringLiteral("8883"))
+        || text.contains(QStringLiteral("tuya"))
+        || text.contains(QStringLiteral("iot"))) {
+        return QStringLiteral("iot");
+    }
+    if (hasPort(QStringLiteral("443")) || hasPort(QStringLiteral("8443")) || hasPort(QStringLiteral("9443"))
+        || hasPort(QStringLiteral("80")) || hasPort(QStringLiteral("8080")) || hasPort(QStringLiteral("8081"))
+        || hasPort(QStringLiteral("8090")) || hasPort(QStringLiteral("8888"))) {
+        return QStringLiteral("web");
     }
     if (hasPort(QStringLiteral("22"))) {
         return QStringLiteral("ssh");
@@ -1218,7 +1630,7 @@ QString fetchHttpText(const QUrl& url, int timeoutMs) {
     request += path.toUtf8();
     request += " HTTP/1.0\r\nHost: ";
     request += url.host().toUtf8();
-    request += "\r\nUser-Agent: NetworkToolsQt/1.0.7\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+    request += "\r\nUser-Agent: NetworkToolsQt/1.0.8\r\nAccept: */*\r\nConnection: close\r\n\r\n";
     socket.write(request);
     if (!socket.waitForBytesWritten(boundedTimeout)) {
         return {};
@@ -1279,6 +1691,221 @@ QString ssdpNameFromDescription(const QString& description, const QString& ip) {
     return normalizeResolvedName(name, ip);
 }
 
+QString xmlEntityDecode(QString value) {
+    value.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    value.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    value.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    value.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+    value.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
+    value.replace(QStringLiteral("&#45;"), QStringLiteral("-"));
+    value.replace(QStringLiteral("&#95;"), QStringLiteral("_"));
+    return value;
+}
+
+bool looksLikeDeviceName(QString value, const QString& ip) {
+    value = xmlEntityDecode(value).trimmed().simplified();
+    while (value.endsWith(QLatin1Char('.'))) {
+        value.chop(1);
+    }
+    if (value.isEmpty()) {
+        return false;
+    }
+    const QString normalized = normalizeResolvedName(value, ip);
+    const QString lower = normalized.toLower();
+    if (normalized.size() < 2
+        || normalized.size() > 96
+        || lower.isEmpty()
+        || lower == QStringLiteral("unknown")
+        || lower == QStringLiteral("unknown vendor")
+        || lower == QStringLiteral("none")
+        || lower == QStringLiteral("null")
+        || lower == QStringLiteral("true")
+        || lower == QStringLiteral("false")
+        || lower == QStringLiteral("online")
+        || lower == QStringLiteral("connected")
+        || lower == QStringLiteral("active")
+        || lower == QStringLiteral("device")
+        || lower == QStringLiteral("localhost")
+        || lower.startsWith(QStringLiteral("http://"))
+        || lower.startsWith(QStringLiteral("https://"))
+        || lower.contains(QStringLiteral("schemas.xmlsoap.org"))
+        || lower.contains(QStringLiteral("w3.org"))
+        || lower.contains(QStringLiteral("uuid:"))
+        || lower.contains(QStringLiteral("urn:"))) {
+        return false;
+    }
+    static const QRegularExpression macOnlyRe(QStringLiteral("^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$"), QRegularExpression::CaseInsensitiveOption);
+    if (macOnlyRe.match(normalized).hasMatch()) {
+        return false;
+    }
+    return true;
+}
+
+QString cleanDeviceNameCandidate(const QString& value, const QString& ip) {
+    QString normalized = normalizeResolvedName(xmlEntityDecode(value).trimmed().simplified(), ip);
+    if (looksLikeDeviceName(normalized, ip)) {
+        return normalized;
+    }
+    return {};
+}
+
+QString nameFromTaggedText(const QString& text, const QString& ip) {
+    const QStringList tagNames {
+        QStringLiteral("friendlyName"),
+        QStringLiteral("FriendlyName"),
+        QStringLiteral("hostName"),
+        QStringLiteral("hostname"),
+        QStringLiteral("HostName"),
+        QStringLiteral("deviceName"),
+        QStringLiteral("DeviceName"),
+        QStringLiteral("clientName"),
+        QStringLiteral("ClientName"),
+        QStringLiteral("computerName"),
+        QStringLiteral("ComputerName"),
+        QStringLiteral("name"),
+        QStringLiteral("Name"),
+    };
+    for (const auto& tag : tagNames) {
+        const QString value = xmlTagValue(text, tag);
+        const QString cleaned = cleanDeviceNameCandidate(value, ip);
+        if (!cleaned.isEmpty()) {
+            return cleaned;
+        }
+    }
+
+    const QList<QRegularExpression> patterns {
+        QRegularExpression(QStringLiteral("\"(?:hostName|hostname|host_name|deviceName|device_name|clientName|client_name|computerName|computer_name|dnsName|dns_name|name)\"\\s*:\\s*\"([^\"]{2,96})\""),
+                           QRegularExpression::CaseInsensitiveOption),
+        QRegularExpression(QStringLiteral("'(?:hostName|hostname|host_name|deviceName|device_name|clientName|client_name|computerName|computer_name|dnsName|dns_name|name)'\\s*:\\s*'([^']{2,96})'"),
+                           QRegularExpression::CaseInsensitiveOption),
+        QRegularExpression(QStringLiteral("(?:hostName|hostname|host_name|deviceName|device_name|clientName|client_name|computerName|computer_name|dnsName|dns_name|name)\\s*[=:]\\s*['\"]?([^'\"<>,;\\r\\n]{2,96})"),
+                           QRegularExpression::CaseInsensitiveOption),
+    };
+    for (const auto& pattern : patterns) {
+        auto it = pattern.globalMatch(text);
+        while (it.hasNext()) {
+            const QString cleaned = cleanDeviceNameCandidate(it.next().captured(1), ip);
+            if (!cleaned.isEmpty()) {
+                return cleaned;
+            }
+        }
+    }
+    return {};
+}
+
+bool isCommonRouterToken(const QString& token) {
+    const QString lower = token.toLower();
+    static const QSet<QString> commonWords {
+        QStringLiteral("http"), QStringLiteral("https"), QStringLiteral("html"), QStringLiteral("head"),
+        QStringLiteral("body"), QStringLiteral("title"), QStringLiteral("meta"), QStringLiteral("link"),
+        QStringLiteral("script"), QStringLiteral("style"), QStringLiteral("class"), QStringLiteral("table"),
+        QStringLiteral("tbody"), QStringLiteral("thead"), QStringLiteral("tr"), QStringLiteral("td"),
+        QStringLiteral("status"), QStringLiteral("online"), QStringLiteral("offline"), QStringLiteral("active"),
+        QStringLiteral("inactive"), QStringLiteral("connected"), QStringLiteral("enabled"), QStringLiteral("disabled"),
+        QStringLiteral("ethernet"), QStringLiteral("wireless"), QStringLiteral("wifi"), QStringLiteral("wlan"),
+        QStringLiteral("lan"), QStringLiteral("wan"), QStringLiteral("dhcp"), QStringLiteral("lease"),
+        QStringLiteral("device"), QStringLiteral("devices"), QStringLiteral("client"), QStringLiteral("clients"),
+        QStringLiteral("host"), QStringLiteral("hosts"), QStringLiteral("hostname"), QStringLiteral("unknown"),
+        QStringLiteral("vendor"), QStringLiteral("manufacturer"), QStringLiteral("model"), QStringLiteral("address"),
+        QStringLiteral("gateway"), QStringLiteral("router"), QStringLiteral("server"), QStringLiteral("name"),
+        QStringLiteral("login"), QStringLiteral("password"), QStringLiteral("authorization"), QStringLiteral("authorized"),
+        QStringLiteral("unauthorized"), QStringLiteral("required"), QStringLiteral("realm"), QStringLiteral("basic"),
+        QStringLiteral("digest"), QStringLiteral("error"), QStringLiteral("found"), QStringLiteral("file"),
+        QStringLiteral("document"), QStringLiteral("window"), QStringLiteral("function"), QStringLiteral("return"),
+        QStringLiteral("var"), QStringLiteral("const"), QStringLiteral("let"), QStringLiteral("true"),
+        QStringLiteral("false"), QStringLiteral("null"), QStringLiteral("undefined"), QStringLiteral("dig"),
+        QStringLiteral("nslookup"), QStringLiteral("query"), QStringLiteral("answer"), QStringLiteral("opcode")
+    };
+    return commonWords.contains(lower)
+        || lower.contains(QStringLiteral("schemas"))
+        || lower.contains(QStringLiteral("xml"))
+        || lower.contains(QStringLiteral("http"))
+        || lower.contains(QStringLiteral("www"));
+}
+
+QString fallbackNameTokenFromWindow(const QString& text, const QString& ip) {
+    static const QRegularExpression tokenRe(QStringLiteral("\\b[A-Za-z][A-Za-z0-9_.\\-]{2,63}\\b"));
+
+    QString normalized = text;
+    normalized.replace(QRegularExpression(QStringLiteral("<[^>]+>")), QStringLiteral("\n"));
+    normalized.replace(QRegularExpression(QStringLiteral("[{}\\[\\]\",;]")), QStringLiteral(" "));
+    normalized.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
+
+    const int ipIndex = normalized.indexOf(ip);
+    if (ipIndex < 0) {
+        return {};
+    }
+    const int start = qMax(0, ipIndex - 180);
+    const QString row = normalized.mid(start, qMin(420, normalized.size() - start));
+    auto it = tokenRe.globalMatch(row);
+    QStringList candidates;
+    while (it.hasNext()) {
+        const QString token = it.next().captured(0).trimmed();
+        if (isCommonRouterToken(token)) {
+            continue;
+        }
+        if (QHostAddress(token).protocol() == QAbstractSocket::IPv4Protocol || normalizeMacString(token) != QStringLiteral("-")) {
+            continue;
+        }
+        static const QRegularExpression leaseTimeRe(QStringLiteral("^(?:\\d+[dhms]|day|days|hour|hours|min|mins|sec|secs)$"),
+                                                    QRegularExpression::CaseInsensitiveOption);
+        if (leaseTimeRe.match(token).hasMatch()) {
+            continue;
+        }
+        const QString cleaned = cleanDeviceNameCandidate(token, ip);
+        if (!cleaned.isEmpty()) {
+            candidates.append(cleaned);
+        }
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const QString& left, const QString& right) {
+        const auto score = [](const QString& value) {
+            int result = value.size();
+            if (value.contains(QLatin1Char('-')) || value.contains(QLatin1Char('_'))) result += 24;
+            if (value.contains(QRegularExpression(QStringLiteral("[A-Z]"))) && value.contains(QRegularExpression(QStringLiteral("[a-z]")))) result += 12;
+            if (value.contains(QRegularExpression(QStringLiteral("\\d")))) result += 8;
+            if (value.contains(QStringLiteral("iphone"), Qt::CaseInsensitive)
+                || value.contains(QStringLiteral("ipad"), Qt::CaseInsensitive)
+                || value.contains(QStringLiteral("macbook"), Qt::CaseInsensitive)
+                || value.contains(QStringLiteral("desktop"), Qt::CaseInsensitive)
+                || value.contains(QStringLiteral("laptop"), Qt::CaseInsensitive)) {
+                result += 18;
+            }
+            return result;
+        };
+        return score(left) > score(right);
+    });
+    if (!candidates.isEmpty()) {
+        return candidates.first();
+    }
+    return {};
+}
+
+void parseNamesFromLooseText(const QString& text, const QSet<QString>& scannedIps, SsdpResolution& resolved) {
+    if (text.isEmpty() || scannedIps.isEmpty()) {
+        return;
+    }
+    for (const auto& ip : scannedIps) {
+        qsizetype index = text.indexOf(ip);
+        while (index >= 0) {
+            const qsizetype start = qMax<qsizetype>(0, index - 1400);
+            const QString window = text.mid(start, qMin<qsizetype>(2800, text.size() - start));
+            QString name = nameFromTaggedText(window, ip);
+            if (name.isEmpty()) {
+                name = fallbackNameTokenFromWindow(window, ip);
+            }
+            if (!name.isEmpty()) {
+                resolved.activeIps.insert(ip);
+                if (!resolved.namesByIp.contains(ip)) {
+                    resolved.namesByIp.insert(ip, name);
+                }
+                break;
+            }
+            index = text.indexOf(ip, index + ip.size());
+        }
+    }
+}
+
 SsdpResolution collectSsdpDevices(const QSet<QString>& scannedIps, const QString& adapterId, int timeoutMs) {
     SsdpResolution resolved;
     if (scannedIps.isEmpty()) {
@@ -1297,28 +1924,47 @@ SsdpResolution collectSsdpDevices(const QSet<QString>& scannedIps, const QString
     socket.setSocketOption(QAbstractSocket::MulticastTtlOption, 2);
 
     const QHostAddress ssdpGroup(QStringLiteral("239.255.255.250"));
-    const QByteArray query =
-        "M-SEARCH * HTTP/1.1\r\n"
-        "HOST: 239.255.255.250:1900\r\n"
-        "MAN: \"ssdp:discover\"\r\n"
-        "MX: 1\r\n"
-        "ST: ssdp:all\r\n"
-        "\r\n";
+    const QList<QByteArray> searchTargets {
+        QByteArrayLiteral("ssdp:all"),
+        QByteArrayLiteral("upnp:rootdevice"),
+        QByteArrayLiteral("urn:schemas-upnp-org:device:Basic:1"),
+        QByteArrayLiteral("urn:schemas-upnp-org:device:MediaRenderer:1"),
+        QByteArrayLiteral("urn:schemas-upnp-org:device:MediaServer:1"),
+        QByteArrayLiteral("urn:schemas-upnp-org:device:Printer:1"),
+        QByteArrayLiteral("urn:schemas-upnp-org:device:Scanner:1"),
+        QByteArrayLiteral("urn:dial-multiscreen-org:service:dial:1"),
+    };
 
     QHash<QString, QString> rawByIp;
     QHash<QString, QString> locationByIp;
     const auto sendQuery = [&]() {
-        socket.writeDatagram(query, ssdpGroup, 1900);
+        for (const auto& st : searchTargets) {
+            QByteArray query;
+            query += "M-SEARCH * HTTP/1.1\r\n";
+            query += "HOST: 239.255.255.250:1900\r\n";
+            query += "MAN: \"ssdp:discover\"\r\n";
+            query += "MX: 1\r\n";
+            query += "ST: ";
+            query += st;
+            query += "\r\n\r\n";
+            socket.writeDatagram(query, ssdpGroup, 1900);
+            QThread::msleep(1);
+        }
     };
 
     QElapsedTimer timer;
     timer.start();
     sendQuery();
     bool sentRefresh = false;
+    bool sentLateRefresh = false;
     while (timer.elapsed() < timeoutMs) {
         if (!sentRefresh && timer.elapsed() > 650) {
             sendQuery();
             sentRefresh = true;
+        }
+        if (!sentLateRefresh && timer.elapsed() > 1250) {
+            sendQuery();
+            sentLateRefresh = true;
         }
         const int remaining = qMax(1, timeoutMs - static_cast<int>(timer.elapsed()));
         if (!socket.waitForReadyRead(qMin(100, remaining))) {
@@ -1357,12 +2003,17 @@ SsdpResolution collectSsdpDevices(const QSet<QString>& scannedIps, const QString
         const QString ip = it.key();
         QString typeText = it.value();
         const QString location = locationByIp.value(ip);
-        QString name;
+        QString name = nameFromTaggedText(typeText, ip);
         if (!location.isEmpty() && fetchedDescriptions < 48) {
             const QString description = fetchHttpText(QUrl(location), 700);
             if (!description.isEmpty()) {
                 ++fetchedDescriptions;
-                name = ssdpNameFromDescription(description, ip);
+                if (name.isEmpty()) {
+                    name = ssdpNameFromDescription(description, ip);
+                }
+                if (name.isEmpty()) {
+                    name = nameFromTaggedText(description, ip);
+                }
                 typeText += QLatin1Char('\n') + description.left(4096);
             }
         }
@@ -1372,6 +2023,263 @@ SsdpResolution collectSsdpDevices(const QSet<QString>& scannedIps, const QString
         resolved.typesByIp.insert(ip, ssdpTypeFromText(typeText));
     }
 
+    return resolved;
+}
+
+QString wsDiscoveryTypeFromText(const QString& text) {
+    const QString lower = text.toLower();
+    if (lower.contains(QStringLiteral("printer")) || lower.contains(QStringLiteral("printdevice"))) {
+        return QStringLiteral("printer");
+    }
+    if (lower.contains(QStringLiteral("scanner")) || lower.contains(QStringLiteral("scan"))) {
+        return QStringLiteral("printer");
+    }
+    if (lower.contains(QStringLiteral("networkvideotransmitter")) || lower.contains(QStringLiteral("onvif")) || lower.contains(QStringLiteral("camera"))) {
+        return QStringLiteral("media");
+    }
+    if (lower.contains(QStringLiteral("computer")) || lower.contains(QStringLiteral("windows"))) {
+        return QStringLiteral("windows");
+    }
+    return QStringLiteral("wsd");
+}
+
+QString nameFromWsDiscoveryScopes(const QString& scopes, const QString& ip) {
+    const QStringList parts = scopes.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    for (QString part : parts) {
+        part = QUrl::fromPercentEncoding(part.toUtf8());
+        const QString lower = part.toLower();
+        const QStringList markers {
+            QStringLiteral("/thisdevice/name/"),
+            QStringLiteral("/device/name/"),
+            QStringLiteral("/name/"),
+            QStringLiteral("onvif.org/name/")
+        };
+        for (const auto& marker : markers) {
+            const int markerIndex = lower.indexOf(marker);
+            if (markerIndex < 0) {
+                continue;
+            }
+            QString candidate = part.mid(markerIndex + marker.size());
+            const int nextSlash = candidate.indexOf(QLatin1Char('/'));
+            if (nextSlash > 0) {
+                candidate = candidate.left(nextSlash);
+            }
+            const QString cleaned = cleanDeviceNameCandidate(candidate, ip);
+            if (!cleaned.isEmpty()) {
+                return cleaned;
+            }
+        }
+    }
+    return {};
+}
+
+QStringList wsDiscoveryXAddrs(const QString& text) {
+    QStringList urls;
+    static const QRegularExpression xaddrRe(QStringLiteral("<(?:\\w+:)?XAddrs[^>]*>([^<]+)</(?:\\w+:)?XAddrs>"),
+                                            QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption);
+    auto it = xaddrRe.globalMatch(text);
+    while (it.hasNext()) {
+        const QStringList parts = it.next().captured(1).split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        for (const auto& part : parts) {
+            const QUrl url(part.trimmed());
+            if (url.isValid() && url.scheme().compare(QStringLiteral("http"), Qt::CaseInsensitive) == 0 && !urls.contains(url.toString())) {
+                urls.append(url.toString());
+            }
+        }
+    }
+    return urls;
+}
+
+SsdpResolution collectWsDiscoveryDevices(const QSet<QString>& scannedIps, const QString& adapterId, int timeoutMs) {
+    SsdpResolution resolved;
+    if (scannedIps.isEmpty()) {
+        return resolved;
+    }
+
+    QUdpSocket socket;
+    if (!socket.bind(QHostAddress::AnyIPv4, 0, QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint)) {
+        return resolved;
+    }
+    const QNetworkInterface iface = QNetworkInterface::interfaceFromName(adapterId);
+    if (iface.isValid()) {
+        socket.setMulticastInterface(iface);
+    }
+    socket.setSocketOption(QAbstractSocket::MulticastTtlOption, 2);
+
+    const QString messageId = QStringLiteral("uuid:%1-%2")
+        .arg(QDateTime::currentMSecsSinceEpoch())
+        .arg(QRandomGenerator::global()->generate());
+    const QByteArray probe = QStringLiteral(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<e:Envelope xmlns:e=\"http://www.w3.org/2003/05/soap-envelope\" "
+        "xmlns:w=\"http://schemas.xmlsoap.org/ws/2004/08/addressing\" "
+        "xmlns:d=\"http://schemas.xmlsoap.org/ws/2005/04/discovery\">"
+        "<e:Header>"
+        "<w:MessageID>%1</w:MessageID>"
+        "<w:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</w:To>"
+        "<w:Action>http://schemas.xmlsoap.org/ws/2005/04/discovery/Probe</w:Action>"
+        "</e:Header>"
+        "<e:Body><d:Probe/></e:Body>"
+        "</e:Envelope>").arg(messageId).toUtf8();
+
+    const QHostAddress wsdGroup(QStringLiteral("239.255.255.250"));
+    const auto sendProbe = [&]() {
+        socket.writeDatagram(probe, wsdGroup, 3702);
+    };
+
+    QHash<QString, QString> rawByIp;
+    QElapsedTimer timer;
+    timer.start();
+    sendProbe();
+    bool sentRefresh = false;
+    while (timer.elapsed() < timeoutMs) {
+        if (!sentRefresh && timer.elapsed() > 700) {
+            sendProbe();
+            sentRefresh = true;
+        }
+        const int remaining = qMax(1, timeoutMs - static_cast<int>(timer.elapsed()));
+        if (!socket.waitForReadyRead(qMin(100, remaining))) {
+            continue;
+        }
+        while (socket.hasPendingDatagrams()) {
+            QByteArray datagram;
+            datagram.resize(static_cast<int>(socket.pendingDatagramSize()));
+            QHostAddress sender;
+            socket.readDatagram(datagram.data(), datagram.size(), &sender);
+            const QString ip = sender.toString();
+            if (!scannedIps.contains(ip)) {
+                continue;
+            }
+            resolved.activeIps.insert(ip);
+            rawByIp.insert(ip, QString::fromUtf8(datagram));
+        }
+    }
+
+    int fetched = 0;
+    for (auto it = rawByIp.constBegin(); it != rawByIp.constEnd(); ++it) {
+        const QString ip = it.key();
+        const QString text = it.value();
+        QString name = nameFromTaggedText(text, ip);
+        static const QRegularExpression scopesRe(QStringLiteral("<(?:\\w+:)?Scopes[^>]*>([^<]+)</(?:\\w+:)?Scopes>"),
+                                                 QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption);
+        const auto scopesMatch = scopesRe.match(text);
+        if (name.isEmpty() && scopesMatch.hasMatch()) {
+            name = nameFromWsDiscoveryScopes(scopesMatch.captured(1), ip);
+        }
+        for (const auto& xaddr : wsDiscoveryXAddrs(text)) {
+            if (fetched >= 32 || !name.isEmpty()) {
+                break;
+            }
+            const QString detail = fetchHttpText(QUrl(xaddr), 650);
+            ++fetched;
+            if (!detail.isEmpty()) {
+                name = nameFromTaggedText(detail, ip);
+            }
+        }
+        if (!name.isEmpty()) {
+            resolved.namesByIp.insert(ip, name);
+        }
+        resolved.typesByIp.insert(ip, wsDiscoveryTypeFromText(text));
+        const QStringList xaddrs = wsDiscoveryXAddrs(text);
+        if (!xaddrs.isEmpty()) {
+            resolved.webByIp.insert(ip, xaddrs.first());
+            const QUrl url(xaddrs.first());
+            const int port = url.port(80);
+            if (port > 0) {
+                resolved.portsByIp.insert(ip, QString::number(port));
+            }
+        }
+    }
+    return resolved;
+}
+
+SsdpResolution collectRouterDhcpHints(const QSet<QString>& scannedIps, const QString& gateway, int timeoutMs) {
+    SsdpResolution resolved;
+    if (scannedIps.isEmpty() || !isValidGatewayIp(gateway)) {
+        return resolved;
+    }
+
+    const QStringList paths {
+        QStringLiteral("/"),
+        QStringLiteral("/status.htm"),
+        QStringLiteral("/status.html"),
+        QStringLiteral("/status.asp"),
+        QStringLiteral("/lan.asp"),
+        QStringLiteral("/LAN.html"),
+        QStringLiteral("/dhcp.htm"),
+        QStringLiteral("/dhcp.html"),
+        QStringLiteral("/DHCPTable.asp"),
+        QStringLiteral("/Main_DHCPStatus_Content.asp"),
+        QStringLiteral("/userRpm/AssignedIpAddrListRpm.htm"),
+        QStringLiteral("/cgi-bin/luci/admin/status/overview"),
+        QStringLiteral("/api/devices"),
+        QStringLiteral("/api/hosts"),
+        QStringLiteral("/api/lan/hosts"),
+        QStringLiteral("/api/dhcp/leases"),
+        QStringLiteral("/devices"),
+        QStringLiteral("/hosts"),
+        QStringLiteral("/clients.json"),
+    };
+
+    QElapsedTimer timer;
+    timer.start();
+    int fetched = 0;
+    for (const auto& path : paths) {
+        if (timer.elapsed() >= timeoutMs || fetched >= 12) {
+            break;
+        }
+        const QUrl url(QStringLiteral("http://%1%2").arg(gateway, path));
+        const QString body = fetchHttpText(url, qBound(260, timeoutMs / 4, 650));
+        ++fetched;
+        if (body.isEmpty() || body.size() > 512 * 1024) {
+            continue;
+        }
+        parseNamesFromLooseText(body, scannedIps, resolved);
+        if (!resolved.namesByIp.isEmpty()) {
+            break;
+        }
+    }
+    return resolved;
+}
+
+SsdpResolution collectLibimobiledeviceNames(const QSet<QString>& scannedIps, const QHash<QString, QString>& knownMacs) {
+    SsdpResolution resolved;
+    if (scannedIps.isEmpty() || executableCommandPath(QStringLiteral("idevice_id")).isEmpty() || executableCommandPath(QStringLiteral("ideviceinfo")).isEmpty()) {
+        return resolved;
+    }
+
+    const QString idsOutput = runTimedCommandCapture(QStringLiteral("idevice_id"), {QStringLiteral("-n"), QStringLiteral("-l")}, 1600, true);
+    const QStringList ids = idsOutput.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    int queried = 0;
+    for (const auto& id : ids) {
+        if (queried >= 16) {
+            break;
+        }
+        ++queried;
+        const QString name = cleanDeviceNameCandidate(
+            runTimedCommandCapture(QStringLiteral("ideviceinfo"), {QStringLiteral("-n"), QStringLiteral("-u"), id, QStringLiteral("-k"), QStringLiteral("DeviceName")}, 1300, true),
+            QString()
+        );
+        if (name.isEmpty()) {
+            continue;
+        }
+        const QString wifiMac = normalizeMacString(
+            runTimedCommandCapture(QStringLiteral("ideviceinfo"), {QStringLiteral("-n"), QStringLiteral("-u"), id, QStringLiteral("-k"), QStringLiteral("WiFiAddress")}, 1300, true)
+        );
+        if (wifiMac == QStringLiteral("-")) {
+            continue;
+        }
+        for (auto it = knownMacs.constBegin(); it != knownMacs.constEnd(); ++it) {
+            if (!scannedIps.contains(it.key())) {
+                continue;
+            }
+            if (normalizeMacString(it.value()) == wifiMac) {
+                resolved.activeIps.insert(it.key());
+                resolved.namesByIp.insert(it.key(), name);
+                resolved.typesByIp.insert(it.key(), QStringLiteral("apple"));
+            }
+        }
+    }
     return resolved;
 }
 
@@ -1563,6 +2471,423 @@ QString ipFromReverseMdnsName(QString name) {
     return QHostAddress(ip).protocol() == QAbstractSocket::IPv4Protocol ? ip : QString();
 }
 
+QString firstPtrNameFromDnsPacket(const QByteArray& packet, const QString& ip) {
+    if (packet.size() < 12) {
+        return {};
+    }
+
+    int offset = 12;
+    const quint16 questionCount = readDnsU16(packet, 4);
+    const quint16 answerCount = readDnsU16(packet, 6);
+    const quint16 authorityCount = readDnsU16(packet, 8);
+    const quint16 additionalCount = readDnsU16(packet, 10);
+    for (quint16 index = 0; index < questionCount; ++index) {
+        decodeDnsName(packet, offset);
+        offset += 4;
+        if (offset > packet.size()) {
+            return {};
+        }
+    }
+
+    const int recordCount = answerCount + authorityCount + additionalCount;
+    for (int index = 0; index < recordCount; ++index) {
+        decodeDnsName(packet, offset);
+        if (offset + 10 > packet.size()) {
+            return {};
+        }
+        const quint16 type = readDnsU16(packet, offset);
+        offset += 2;
+        offset += 2;
+        offset += 4;
+        const quint16 dataLength = readDnsU16(packet, offset);
+        offset += 2;
+        if (offset + dataLength > packet.size()) {
+            return {};
+        }
+        if (type == 12) {
+            int nameOffset = offset;
+            const QString normalized = normalizeResolvedName(decodeDnsName(packet, nameOffset), ip);
+            if (!normalized.isEmpty()) {
+                return normalized;
+            }
+        }
+        offset += dataLength;
+    }
+    return {};
+}
+
+QString resolveMdnsPtrName(const QString& ip, const QString& adapterId, int timeoutMs) {
+    if (QHostAddress(ip).protocol() != QAbstractSocket::IPv4Protocol) {
+        return {};
+    }
+    QSet<QString> target;
+    target.insert(ip);
+    const auto resolved = collectMdnsNamesWithSocket(target, {}, adapterId, qBound(300, timeoutMs, 1800));
+    return normalizeResolvedName(resolved.namesByIp.value(ip), ip);
+}
+
+QByteArray encodedNetbiosName(const QString& rawName, quint8 suffix) {
+    QByteArray padded(16, ' ');
+    const QByteArray source = rawName.trimmed().isEmpty()
+        ? QByteArray("*")
+        : rawName.left(15).toLatin1().toUpper();
+    for (int index = 0; index < source.size() && index < 15; ++index) {
+        padded[index] = source.at(index);
+    }
+    padded[15] = static_cast<char>(suffix);
+
+    QByteArray encoded;
+    encoded.reserve(34);
+    encoded.append(static_cast<char>(32));
+    for (const auto byte : padded) {
+        const quint8 value = static_cast<quint8>(byte);
+        encoded.append(static_cast<char>('A' + ((value >> 4) & 0x0f)));
+        encoded.append(static_cast<char>('A' + (value & 0x0f)));
+    }
+    encoded.append('\0');
+    return encoded;
+}
+
+QByteArray buildNetbiosNodeStatusQuery(quint16 transactionId) {
+    QByteArray packet;
+    packet.reserve(64);
+    appendDnsU16(packet, transactionId);
+    appendDnsU16(packet, 0x0000);
+    appendDnsU16(packet, 1);
+    appendDnsU16(packet, 0);
+    appendDnsU16(packet, 0);
+    appendDnsU16(packet, 0);
+    packet.append(encodedNetbiosName(QStringLiteral("*"), 0x00));
+    appendDnsU16(packet, 0x0021);
+    appendDnsU16(packet, 0x0001);
+    return packet;
+}
+
+QString cleanNetbiosName(QString name) {
+    name = name.trimmed();
+    name.remove(QRegularExpression(QStringLiteral("[^A-Za-z0-9_. -]")));
+    const QString lower = name.toLower();
+    if (name.isEmpty()
+        || lower == QStringLiteral("workgroup")
+        || lower == QStringLiteral("local")
+        || lower.contains(QStringLiteral("msbrowse"))) {
+        return {};
+    }
+    return name;
+}
+
+QString parseNetbiosNodeStatusName(const QByteArray& packet, quint16 transactionId, const QString& ip) {
+    if (packet.size() < 12 || readDnsU16(packet, 0) != transactionId) {
+        return {};
+    }
+
+    int offset = 12;
+    const quint16 questionCount = readDnsU16(packet, 4);
+    const quint16 answerCount = readDnsU16(packet, 6);
+    for (quint16 index = 0; index < questionCount; ++index) {
+        decodeDnsName(packet, offset);
+        offset += 4;
+        if (offset > packet.size()) {
+            return {};
+        }
+    }
+
+    QString workstationName;
+    QString serverName;
+    for (quint16 answer = 0; answer < answerCount; ++answer) {
+        decodeDnsName(packet, offset);
+        if (offset + 10 > packet.size()) {
+            return {};
+        }
+        const quint16 type = readDnsU16(packet, offset);
+        offset += 2;
+        offset += 2;
+        offset += 4;
+        const quint16 dataLength = readDnsU16(packet, offset);
+        offset += 2;
+        if (offset + dataLength > packet.size()) {
+            return {};
+        }
+        if (type == 0x0021 && dataLength > 1) {
+            const int count = static_cast<quint8>(packet.at(offset));
+            for (int index = 0; index < count; ++index) {
+                const int entryOffset = offset + 1 + (index * 18);
+                if (entryOffset + 18 > offset + dataLength || entryOffset + 18 > packet.size()) {
+                    break;
+                }
+                const QString name = cleanNetbiosName(QString::fromLatin1(packet.constData() + entryOffset, 15));
+                if (name.isEmpty()) {
+                    continue;
+                }
+                const quint8 suffix = static_cast<quint8>(packet.at(entryOffset + 15));
+                const quint16 flags = readDnsU16(packet, entryOffset + 16);
+                const bool groupName = (flags & 0x8000u) != 0;
+                if (groupName) {
+                    continue;
+                }
+                if (suffix == 0x20 && serverName.isEmpty()) {
+                    serverName = name;
+                } else if (suffix == 0x00 && workstationName.isEmpty()) {
+                    workstationName = name;
+                }
+            }
+        }
+        offset += dataLength;
+    }
+
+    const QString best = !serverName.isEmpty() ? serverName : workstationName;
+    return normalizeResolvedName(best, ip);
+}
+
+QString resolveNetbiosName(const QString& ip, int timeoutMs) {
+    if (QHostAddress(ip).protocol() != QAbstractSocket::IPv4Protocol) {
+        return {};
+    }
+
+    QUdpSocket socket;
+    if (!socket.bind(QHostAddress::AnyIPv4, 0)) {
+        return {};
+    }
+    const quint16 transactionId = static_cast<quint16>((QDateTime::currentMSecsSinceEpoch() ^ qHash(ip)) & 0xffff);
+    const QByteArray query = buildNetbiosNodeStatusQuery(transactionId);
+    socket.writeDatagram(query, QHostAddress(ip), 137);
+
+    QElapsedTimer timer;
+    timer.start();
+    const int boundedTimeout = qBound(250, timeoutMs, 900);
+    while (timer.elapsed() < boundedTimeout) {
+        const int remaining = qMax(1, boundedTimeout - static_cast<int>(timer.elapsed()));
+        if (!socket.waitForReadyRead(qMin(90, remaining))) {
+            continue;
+        }
+        while (socket.hasPendingDatagrams()) {
+            QByteArray datagram;
+            datagram.resize(static_cast<int>(socket.pendingDatagramSize()));
+            QHostAddress sender;
+            socket.readDatagram(datagram.data(), datagram.size(), &sender);
+            if (sender.toString() != ip) {
+                continue;
+            }
+            const QString name = parseNetbiosNodeStatusName(datagram, transactionId, ip);
+            if (!name.isEmpty()) {
+                return name;
+            }
+        }
+    }
+    return {};
+}
+
+QByteArray buildUnicastDnsQuery(const QString& name, quint16 type, quint16 transactionId) {
+    QByteArray packet;
+    packet.reserve(64 + name.size());
+    appendDnsU16(packet, transactionId);
+    appendDnsU16(packet, 0x0000);
+    appendDnsU16(packet, 1);
+    appendDnsU16(packet, 0);
+    appendDnsU16(packet, 0);
+    appendDnsU16(packet, 0);
+    packet.append(encodeDnsName(name));
+    appendDnsU16(packet, type);
+    appendDnsU16(packet, 0x0001);
+    return packet;
+}
+
+QString resolveLlmnrPtrName(const QString& ip, int timeoutMs) {
+    const QString reverseName = reverseMdnsNameForIp(ip);
+    if (reverseName.isEmpty()) {
+        return {};
+    }
+
+    QUdpSocket socket;
+    if (!socket.bind(QHostAddress::AnyIPv4, 0)) {
+        return {};
+    }
+    const quint16 transactionId = static_cast<quint16>((QDateTime::currentMSecsSinceEpoch() ^ qHash(ip) ^ 0x5355) & 0xffff);
+    const QByteArray query = buildUnicastDnsQuery(reverseName, 12, transactionId);
+    socket.writeDatagram(query, QHostAddress(ip), 5355);
+
+    QElapsedTimer timer;
+    timer.start();
+    const int boundedTimeout = qBound(250, timeoutMs, 900);
+    while (timer.elapsed() < boundedTimeout) {
+        const int remaining = qMax(1, boundedTimeout - static_cast<int>(timer.elapsed()));
+        if (!socket.waitForReadyRead(qMin(90, remaining))) {
+            continue;
+        }
+        while (socket.hasPendingDatagrams()) {
+            QByteArray datagram;
+            datagram.resize(static_cast<int>(socket.pendingDatagramSize()));
+            QHostAddress sender;
+            socket.readDatagram(datagram.data(), datagram.size(), &sender);
+            if (sender.toString() != ip || readDnsU16(datagram, 0) != transactionId) {
+                continue;
+            }
+            const QString name = firstPtrNameFromDnsPacket(datagram, ip);
+            if (!name.isEmpty()) {
+                return name;
+            }
+        }
+    }
+    return {};
+}
+
+QString resolveSmbStatusName(const QString& ip, int timeoutMs) {
+    if (QHostAddress(ip).protocol() != QAbstractSocket::IPv4Protocol
+        || executableCommandPath(QStringLiteral("smbutil")).isEmpty()) {
+        return {};
+    }
+
+    const QString output = runTimedCommandCapture(
+        QStringLiteral("smbutil"),
+        {QStringLiteral("status"), QStringLiteral("-ae"), ip},
+        qBound(500, timeoutMs, 1500),
+        true
+    );
+    if (output.isEmpty()) {
+        return {};
+    }
+
+    const QList<QRegularExpression> patterns {
+        QRegularExpression(QStringLiteral("^\\s*(?:Server|NetBIOS\\s+Name|Workstation|Name)\\s*[:=]\\s*([^\\r\\n]{2,64})$"),
+                           QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption),
+        QRegularExpression(QStringLiteral("^\\s*([A-Za-z0-9_.\\-]{2,64})\\s+<00>\\s+UNIQUE\\b"),
+                           QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption),
+        QRegularExpression(QStringLiteral("Got\\s+response\\s+from\\s+([^\\s:]{2,64})"),
+                           QRegularExpression::CaseInsensitiveOption),
+    };
+    for (const auto& pattern : patterns) {
+        auto it = pattern.globalMatch(output);
+        while (it.hasNext()) {
+            const QString candidate = it.next().captured(1).trimmed();
+            if (candidate == ip || isCommonRouterToken(candidate)) {
+                continue;
+            }
+            const QString cleaned = cleanDeviceNameCandidate(candidate, ip);
+            if (!cleaned.isEmpty()) {
+                return cleaned;
+            }
+        }
+    }
+    return {};
+}
+
+QByteArray appleLockdownGetValueRequest(const QString& key) {
+    const QByteArray body = QStringLiteral(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+        "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
+        "<plist version=\"1.0\"><dict>"
+        "<key>Label</key><string>NetworkToolsQt</string>"
+        "<key>Request</key><string>GetValue</string>"
+        "<key>Key</key><string>%1</string>"
+        "</dict></plist>").arg(key).toUtf8();
+    QByteArray packet;
+    packet.reserve(body.size() + 4);
+    appendDnsU16(packet, static_cast<quint16>((body.size() >> 16) & 0xffff));
+    appendDnsU16(packet, static_cast<quint16>(body.size() & 0xffff));
+    packet.append(body);
+    return packet;
+}
+
+QString parseAppleLockdownValue(const QByteArray& payload, const QString& ip) {
+    const QString text = QString::fromUtf8(payload);
+    static const QRegularExpression valueRe(
+        QStringLiteral("<key>\\s*Value\\s*</key>\\s*<string>([^<]+)</string>"),
+        QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption
+    );
+    const auto match = valueRe.match(text);
+    if (match.hasMatch()) {
+        return normalizeResolvedName(xmlEntityDecode(match.captured(1).trimmed()), ip);
+    }
+
+    static const QRegularExpression stringRe(
+        QStringLiteral("<string>([^<]{2,96})</string>"),
+        QRegularExpression::CaseInsensitiveOption
+    );
+    auto stringIt = stringRe.globalMatch(text);
+    while (stringIt.hasNext()) {
+        const QString normalized = normalizeResolvedName(xmlEntityDecode(stringIt.next().captured(1).trimmed()), ip);
+        const QString lower = normalized.toLower();
+        if (!normalized.isEmpty()
+            && lower != QStringLiteral("networktoolsqt")
+            && lower != QStringLiteral("getvalue")
+            && lower != QStringLiteral("success")) {
+            return normalized;
+        }
+    }
+
+    const QString latin = QString::fromLatin1(payload);
+    const int marker = latin.indexOf(QStringLiteral("Value"), 0, Qt::CaseInsensitive);
+    if (marker >= 0) {
+        static const QRegularExpression printableRe(QStringLiteral("[A-Za-z0-9][A-Za-z0-9_. '\\-]{2,80}"));
+        auto it = printableRe.globalMatch(latin.mid(marker + 5));
+        while (it.hasNext()) {
+            const QString normalized = normalizeResolvedName(it.next().captured(0).trimmed(), ip);
+            const QString lower = normalized.toLower();
+            if (!normalized.isEmpty()
+                && lower != QStringLiteral("devicename")
+                && lower != QStringLiteral("value")
+                && lower != QStringLiteral("success")) {
+                return normalized;
+            }
+        }
+    }
+    return {};
+}
+
+QString resolveAppleLockdownName(const QString& ip, int timeoutMs) {
+    if (QHostAddress(ip).protocol() != QAbstractSocket::IPv4Protocol) {
+        return {};
+    }
+
+    QTcpSocket socket;
+    const int boundedTimeout = qBound(280, timeoutMs, 850);
+    socket.connectToHost(ip, 62078);
+    if (!socket.waitForConnected(boundedTimeout)) {
+        return {};
+    }
+
+    const QByteArray request = appleLockdownGetValueRequest(QStringLiteral("DeviceName"));
+    socket.write(request);
+    if (!socket.waitForBytesWritten(boundedTimeout)) {
+        return {};
+    }
+
+    QByteArray header;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < boundedTimeout && header.size() < 4) {
+        if (!socket.waitForReadyRead(qMin(80, boundedTimeout - static_cast<int>(timer.elapsed())))) {
+            continue;
+        }
+        header += socket.read(4 - header.size());
+    }
+    if (header.size() != 4) {
+        return {};
+    }
+
+    const quint32 length = (static_cast<quint32>(static_cast<quint8>(header.at(0))) << 24)
+        | (static_cast<quint32>(static_cast<quint8>(header.at(1))) << 16)
+        | (static_cast<quint32>(static_cast<quint8>(header.at(2))) << 8)
+        | static_cast<quint32>(static_cast<quint8>(header.at(3)));
+    if (length == 0 || length > 256 * 1024) {
+        return {};
+    }
+
+    QByteArray payload;
+    payload.reserve(static_cast<int>(length));
+    while (timer.elapsed() < boundedTimeout && payload.size() < static_cast<int>(length)) {
+        if (!socket.waitForReadyRead(qMin(80, boundedTimeout - static_cast<int>(timer.elapsed())))) {
+            continue;
+        }
+        payload += socket.read(static_cast<int>(length) - payload.size());
+    }
+    if (payload.isEmpty()) {
+        return {};
+    }
+    return parseAppleLockdownValue(payload, ip);
+}
+
 QList<QString> sortedIpsForMdnsReverse(const QSet<QString>& scannedIps, int limit) {
     QList<QString> ips(scannedIps.constBegin(), scannedIps.constEnd());
     std::sort(ips.begin(), ips.end(), [](const QString& left, const QString& right) {
@@ -1579,10 +2904,53 @@ struct MdnsResolutionState {
     QHash<QString, QString> serviceByInstance;
     QHash<QString, QString> instanceByFullName;
     QHash<QString, QString> targetByInstance;
+    QHash<QString, QString> nameByInstance;
     QHash<QString, QStringList> ipsByHost;
     QSet<QString> queriedSrvInstances;
     QSet<QString> queriedHosts;
 };
+
+QString bestNameFromTxtRecord(const QByteArray& data, const QString& ip) {
+    QStringList values;
+    int offset = 0;
+    while (offset < data.size()) {
+        const int length = static_cast<quint8>(data.at(offset));
+        ++offset;
+        if (length <= 0 || offset + length > data.size()) {
+            break;
+        }
+        values.append(QString::fromUtf8(data.constData() + offset, length));
+        offset += length;
+    }
+
+    const QStringList preferredKeys {
+        QStringLiteral("fn"),
+        QStringLiteral("name"),
+        QStringLiteral("device_name"),
+        QStringLiteral("devicename"),
+        QStringLiteral("hostname"),
+        QStringLiteral("host"),
+        QStringLiteral("ty"),
+        QStringLiteral("model"),
+    };
+    for (const auto& key : preferredKeys) {
+        for (const auto& value : values) {
+            const int equals = value.indexOf(QLatin1Char('='));
+            if (equals <= 0) {
+                continue;
+            }
+            const QString currentKey = value.left(equals).trimmed().toLower();
+            if (currentKey != key) {
+                continue;
+            }
+            const QString cleaned = cleanDeviceNameCandidate(value.mid(equals + 1), ip);
+            if (!cleaned.isEmpty()) {
+                return cleaned;
+            }
+        }
+    }
+    return {};
+}
 
 void materializeMdnsState(const QSet<QString>& scannedIps, MdnsResolutionState& state) {
     for (auto it = state.serviceByInstance.constBegin(); it != state.serviceByInstance.constEnd(); ++it) {
@@ -1590,7 +2958,10 @@ void materializeMdnsState(const QSet<QString>& scannedIps, MdnsResolutionState& 
         const QString serviceType = it.value();
         const QString instanceName = state.instanceByFullName.value(key);
         const QString targetHost = state.targetByInstance.value(key);
-        const QString displayName = prettyBonjourName(serviceType, instanceName, targetHost);
+        QString displayName = state.nameByInstance.value(key);
+        if (displayName.isEmpty()) {
+            displayName = prettyBonjourName(serviceType, instanceName, targetHost);
+        }
         if (displayName.isEmpty()) {
             continue;
         }
@@ -1609,10 +2980,12 @@ void materializeMdnsState(const QSet<QString>& scannedIps, MdnsResolutionState& 
                 }
             }
         }
+
     }
 }
 
-void parseMdnsPacketIntoState(const QByteArray& packet, const QSet<QString>& scannedIps, MdnsResolutionState& state) {
+void parseMdnsPacketIntoState(const QByteArray& packet, const QSet<QString>& scannedIps, MdnsResolutionState& state, const QString& senderIp = QString()) {
+    Q_UNUSED(senderIp)
     if (packet.size() < 12) {
         return;
     }
@@ -1664,8 +3037,9 @@ void parseMdnsPacketIntoState(const QByteArray& packet, const QSet<QString>& sca
                 const QString serviceType = serviceTypeFromDnsName(recordName);
                 if (!serviceType.isEmpty()) {
                     const QString key = pointerName.toLower();
+                    const QString instanceName = instanceNameFromServiceName(pointerName, serviceType);
                     state.serviceByInstance.insert(key, serviceType);
-                    state.instanceByFullName.insert(key, instanceNameFromServiceName(pointerName, serviceType));
+                    state.instanceByFullName.insert(key, instanceName);
                 }
             }
         } else if (type == 33 && dataLength >= 7) {
@@ -1673,6 +3047,11 @@ void parseMdnsPacketIntoState(const QByteArray& packet, const QSet<QString>& sca
             const QString targetHost = decodeDnsName(packet, targetOffset);
             if (!targetHost.isEmpty()) {
                 state.targetByInstance.insert(recordName.toLower(), targetHost);
+            }
+        } else if (type == 16 && dataLength > 1) {
+            const QString txtName = bestNameFromTxtRecord(packet.mid(dataOffset, dataLength), QString());
+            if (!txtName.isEmpty()) {
+                state.nameByInstance.insert(recordName.toLower(), txtName);
             }
         } else if (type == 1 && dataLength == 4) {
             const QString ip = QStringLiteral("%1.%2.%3.%4")
@@ -1735,11 +3114,42 @@ BonjourResolution collectMdnsNamesWithSocket(const QSet<QString>& scannedIps,
         }
     }
 
+    QList<QByteArray> directServiceQueries;
+    const QStringList directServiceTypes = serviceTypes.isEmpty()
+        ? priorityBonjourServiceTypes()
+        : serviceTypes.mid(0, qMin(serviceTypes.size(), 12));
+    directServiceQueries.reserve(directServiceTypes.size());
+    for (const auto& serviceType : directServiceTypes) {
+        directServiceQueries.append(buildMdnsPtrQuery(serviceType + QStringLiteral(".local")));
+    }
+    const QList<QString> directTargetIps = sortedIpsForMdnsReverse(scannedIps, scannedIps.size() <= 256 ? 256 : 128);
+
     const auto sendQueries = [&]() {
         for (int index = 0; index < queries.size(); ++index) {
             socket.writeDatagram(queries.at(index), mdnsGroup, 5353);
             if ((index + 1) % 64 == 0) {
                 QThread::msleep(2);
+            }
+        }
+    };
+    const auto sendDirectQueries = [&]() {
+        int sent = 0;
+        for (const auto& ip : directTargetIps) {
+            const QHostAddress target(ip);
+            if (target.protocol() != QAbstractSocket::IPv4Protocol) {
+                continue;
+            }
+            const QString reverseName = reverseMdnsNameForIp(ip);
+            if (!reverseName.isEmpty()) {
+                socket.writeDatagram(buildMdnsPtrQuery(reverseName), target, 5353);
+                ++sent;
+            }
+            for (const auto& query : directServiceQueries) {
+                socket.writeDatagram(query, target, 5353);
+                ++sent;
+                if (sent % 96 == 0) {
+                    QThread::msleep(2);
+                }
             }
         }
     };
@@ -1774,11 +3184,17 @@ BonjourResolution collectMdnsNamesWithSocket(const QSet<QString>& scannedIps,
     QElapsedTimer timer;
     timer.start();
     sendQueries();
+    sendDirectQueries();
     bool sentRefresh = false;
+    bool sentDirectRefresh = false;
     while (timer.elapsed() < timeoutMs) {
         if (!sentRefresh && timer.elapsed() > 350) {
             sendQueries();
             sentRefresh = true;
+        }
+        if (!sentDirectRefresh && timer.elapsed() > 900) {
+            sendDirectQueries();
+            sentDirectRefresh = true;
         }
         const int remaining = qMax(1, timeoutMs - static_cast<int>(timer.elapsed()));
         if (!socket.waitForReadyRead(qMin(80, remaining))) {
@@ -1787,8 +3203,9 @@ BonjourResolution collectMdnsNamesWithSocket(const QSet<QString>& scannedIps,
         while (socket.hasPendingDatagrams()) {
             QByteArray datagram;
             datagram.resize(static_cast<int>(socket.pendingDatagramSize()));
-            socket.readDatagram(datagram.data(), datagram.size());
-            parseMdnsPacketIntoState(datagram, scannedIps, state);
+            QHostAddress sender;
+            socket.readDatagram(datagram.data(), datagram.size(), &sender);
+            parseMdnsPacketIntoState(datagram, scannedIps, state, sender.toString());
         }
         sendFollowupQueries();
     }
@@ -1998,13 +3415,32 @@ NetworkScanService::NetworkScanService(VendorDbService* vendorDb, QObject* paren
         startNameEnrichment(records, finishedGeneration);
         startDetailEnrichment(records, finishedGeneration, finishedProfile, true);
         startRtspEnrichment(records, finishedGeneration);
-        QTimer::singleShot(900, this, [this, records, finishedGeneration, finishedProfile]() {
-            if (!m_cancelRequested.load() && m_activeGeneration.load() == finishedGeneration) {
-                startNameEnrichment(records, finishedGeneration);
-                startDetailEnrichment(records, finishedGeneration, finishedProfile, true);
-                startRtspEnrichment(records, finishedGeneration);
-            }
-        });
+        QList<int> polishDelays;
+        if (finishedProfile == QStringLiteral("fast")) {
+            polishDelays = {650, 1700};
+        } else if (finishedProfile == QStringLiteral("reliable")) {
+            polishDelays = {900, 2400, 5200, 8800};
+        } else {
+            polishDelays = {750, 2200, 4600};
+        }
+        for (const int delayMs : polishDelays) {
+            QTimer::singleShot(delayMs, this, [this, finishedGeneration, finishedProfile]() {
+                if (m_cancelRequested.load() || m_activeGeneration.load() != finishedGeneration) {
+                    return;
+                }
+                QList<ScanRecord> snapshot;
+                {
+                    QMutexLocker locker(&m_liveRecordsMutex);
+                    snapshot = m_liveRecords.values();
+                }
+                if (snapshot.isEmpty()) {
+                    return;
+                }
+                startNameEnrichment(snapshot, finishedGeneration);
+                startDetailEnrichment(snapshot, finishedGeneration, finishedProfile, true);
+                startRtspEnrichment(snapshot, finishedGeneration);
+            });
+        }
     });
 }
 
@@ -2019,7 +3455,7 @@ QList<AdapterInfo> NetworkScanService::adapters() const {
     QList<AdapterInfo> items;
     const auto interfaces = QNetworkInterface::allInterfaces();
     for (const auto& iface : interfaces) {
-        if (!(iface.flags() & QNetworkInterface::IsUp) || !(iface.flags() & QNetworkInterface::IsRunning)) {
+        if (!(iface.flags() & QNetworkInterface::IsUp)) {
             continue;
         }
         for (const auto& entry : iface.addressEntries()) {
@@ -2089,6 +3525,10 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
     }
     m_activeAdapter = adapterById(adapterId);
     const auto adapter = m_activeAdapter;
+    if (adapter.ip.trimmed().isEmpty()) {
+        emit scanFailed(QStringLiteral("Не найден активный сетевой адаптер. Обновите адаптеры через пару секунд."));
+        return;
+    }
     const QString activeScanProfile = normalizedScanProfile(scanProfile);
     m_activeScanProfile = activeScanProfile;
     m_scanPool.setMaxThreadCount(workerCountForProfile(maxWorkers, activeScanProfile));
@@ -2446,7 +3886,7 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                     record.portsDisplay = openPorts.join(QLatin1Char(','));
                     record.port = record.portsDisplay;
                     record.webDetect = detectWebService(ip, openPorts);
-                    record.typeHint = detectTypeHint(openPorts, ping.success, record.onLink);
+                    record.typeHint = detectTypeHint(openPorts, ping.success, record.onLink, record.hostName, record.vendor, record.mac);
                     record.speed = ping.success ? QStringLiteral("icmp") : QStringLiteral("tcp");
                     enriched = true;
                 }
@@ -2454,7 +3894,7 @@ void NetworkScanService::start(const QString& startIp, const QString& endIp, con
                 if ((record.status != HostStatus::Offline)
                     && record.hostName.isEmpty()
                     && (ping.success || !openPorts.isEmpty())) {
-                    const QString resolvedName = reverseLookupName(ip);
+                    const QString resolvedName = resolveHostNameDeep(ip, adapter.id, 900);
                     if (!resolvedName.isEmpty()) {
                         record.hostName = resolvedName;
                         record.vendor = resolvedName;
@@ -2832,7 +4272,6 @@ void NetworkScanService::startBonjourEnrichment(const QList<QString>& ips, quint
     QPointer<NetworkScanService> guard(this);
     const QString adapterId = m_activeAdapter.id;
     const auto publishResolution = [guard, generation](const BonjourResolution& bonjourNames) {
-        rememberBonjourResolution(bonjourNames);
         if (!guard || isEmptyBonjourResolution(bonjourNames)) {
             return;
         }
@@ -2873,26 +4312,6 @@ void NetworkScanService::startBonjourEnrichment(const QList<QString>& ips, quint
                         recordMac = updated.mac;
                         updated.hostName = resolvedName;
                         updated.vendor = resolvedName;
-                        guard->m_liveRecords.insert(ip, updated);
-                        shouldEmit = true;
-                    } else if (bonjourNames.activeIps.contains(ip)) {
-                        updated.ip = ip;
-                        updated.generation = generation;
-                        updated.status = HostStatus::Unknown;
-                        updated.pingDisplay = QStringLiteral("[n/a]");
-                        updated.portsDisplay = QStringLiteral("-");
-                        updated.port = QStringLiteral("-");
-                        updated.webDetect = QStringLiteral("[n/a]");
-                        updated.speed = QStringLiteral("mdns");
-                        updated.typeHint = QStringLiteral("mdns");
-                        updated.mac = guard->prefetchedMacForIp(ip);
-                        updated.gateway = guard->cachedGateway();
-                        updated.mask = guard->m_cachedMask;
-                        updated.onLink = isOnLink(ip, guard->m_activeAdapter);
-                        updated.hostName = resolvedName;
-                        updated.vendor = resolvedName;
-                        updated.name = routeDisplayForHost(guard->m_activeAdapter, updated);
-                        recordMac = updated.mac;
                         guard->m_liveRecords.insert(ip, updated);
                         shouldEmit = true;
                     }
@@ -3186,6 +4605,46 @@ void NetworkScanService::startSsdpEnrichment(const QList<QString>& ips, quint64 
         }
     });
 
+    (void)QtConcurrent::run(&m_enrichmentPool, [guard, generation, scannedIps, adapterId, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+            return;
+        }
+        const auto wsd = collectWsDiscoveryDevices(scannedIps, adapterId, 1500);
+        if (!isEmptySsdpResolution(wsd)) {
+            publishResolution(wsd);
+        }
+    });
+
+    QTimer::singleShot(450, this, [guard, generation, scannedIps, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+            return;
+        }
+        (void)QtConcurrent::run(&guard->m_enrichmentPool, [guard, generation, scannedIps, publishResolution]() {
+            if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+                return;
+            }
+            const auto mobile = collectLibimobiledeviceNames(scannedIps, guard->prefetchedMacsSnapshot());
+            if (!isEmptySsdpResolution(mobile)) {
+                publishResolution(mobile);
+            }
+        });
+    });
+
+    QTimer::singleShot(900, this, [guard, generation, scannedIps, publishResolution]() {
+        if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+            return;
+        }
+        (void)QtConcurrent::run(&guard->m_enrichmentPool, [guard, generation, scannedIps, publishResolution]() {
+            if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
+                return;
+            }
+            const auto hints = collectRouterDhcpHints(scannedIps, guard->cachedGateway(), 1900);
+            if (!isEmptySsdpResolution(hints)) {
+                publishResolution(hints);
+            }
+        });
+    });
+
     QTimer::singleShot(2600, this, [guard, generation, scannedIps, adapterId, publishResolution]() {
         if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
             return;
@@ -3194,9 +4653,10 @@ void NetworkScanService::startSsdpEnrichment(const QList<QString>& ips, quint64 
             if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
                 return;
             }
-            const auto ssdp = collectSsdpDevices(scannedIps, adapterId, 1800);
-            if (!isEmptySsdpResolution(ssdp)) {
-                publishResolution(ssdp);
+            SsdpResolution combined = collectSsdpDevices(scannedIps, adapterId, 1800);
+            mergeDeviceResolution(combined, collectWsDiscoveryDevices(scannedIps, adapterId, 1700));
+            if (!isEmptySsdpResolution(combined)) {
+                publishResolution(combined);
             }
         });
     });
@@ -3209,9 +4669,11 @@ void NetworkScanService::startSsdpEnrichment(const QList<QString>& ips, quint64 
             if (!guard || guard->m_cancelRequested.load() || guard->m_activeGeneration.load() != generation) {
                 return;
             }
-            const auto ssdp = collectSsdpDevices(scannedIps, adapterId, 2200);
-            if (!isEmptySsdpResolution(ssdp)) {
-                publishResolution(ssdp);
+            SsdpResolution combined = collectSsdpDevices(scannedIps, adapterId, 2200);
+            mergeDeviceResolution(combined, collectWsDiscoveryDevices(scannedIps, adapterId, 1900));
+            mergeDeviceResolution(combined, collectRouterDhcpHints(scannedIps, guard->cachedGateway(), 2200));
+            if (!isEmptySsdpResolution(combined)) {
+                publishResolution(combined);
             }
         });
     });
@@ -3327,7 +4789,7 @@ void NetworkScanService::startNameEnrichment(const QList<ScanRecord>& records, q
             if (guard->m_activeGeneration.load() == generation && !guard->m_cancelRequested.load()) {
                 name = cachedResolvedName(candidate.ip, candidate.mac);
                 if (name.isEmpty()) {
-                    name = reverseLookupName(candidate.ip);
+                    name = resolveHostNameDeep(candidate.ip, guard->m_activeAdapter.id, 1300);
                 }
                 if (!name.isEmpty()) {
                     rememberResolvedName(candidate.ip, candidate.mac, name);
@@ -3491,14 +4953,14 @@ void NetworkScanService::startDetailEnrichment(const QList<ScanRecord>& records,
                     changed = true;
                 }
                 const bool pingSuccess = !isMissingPingDisplay(record.pingDisplay);
-                const QString typeHint = detectTypeHint(openPorts, pingSuccess, record.onLink);
+                const QString typeHint = detectTypeHint(openPorts, pingSuccess, record.onLink, record.hostName, record.vendor, record.mac);
                 if (record.typeHint != typeHint) {
                     record.typeHint = typeHint;
                     changed = true;
                 }
             } else if (isUnknownVendorLabel(record.typeHint)) {
                 const bool pingSuccess = !isMissingPingDisplay(record.pingDisplay);
-                const QString typeHint = detectTypeHint({}, pingSuccess, record.onLink);
+                const QString typeHint = detectTypeHint({}, pingSuccess, record.onLink, record.hostName, record.vendor, record.mac);
                 if (record.typeHint != typeHint) {
                     record.typeHint = typeHint;
                     changed = true;
@@ -3508,7 +4970,7 @@ void NetworkScanService::startDetailEnrichment(const QList<ScanRecord>& records,
             if (isUnknownVendorLabel(record.hostName)) {
                 QString name = cachedResolvedName(record.ip, record.mac);
                 if (name.isEmpty()) {
-                    name = reverseLookupName(record.ip);
+                    name = resolveHostNameDeep(record.ip, adapter.id, 1400);
                 }
                 if (!name.isEmpty()) {
                     record.hostName = name;
@@ -3660,7 +5122,7 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
         ping = pingHost(ip, adapter.ip, timing.pingTimeoutMs);
         resolvedName = ping.resolvedName;
         if (ping.success && resolvedName.isEmpty()) {
-            resolvedName = reverseLookupName(ip);
+            resolvedName = resolveHostNameDeep(ip, adapter.id, timing.pingTimeoutMs);
         }
     }
     row.pingDisplay = ping.display.isEmpty() ? QStringLiteral("[n/a]") : ping.display;
@@ -3676,7 +5138,7 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
             resolvedName = ping.resolvedName;
         }
         if (ping.success && resolvedName.isEmpty()) {
-            resolvedName = reverseLookupName(ip);
+            resolvedName = resolveHostNameDeep(ip, adapter.id, timing.pingTimeoutMs);
         }
     }
 
@@ -3695,7 +5157,7 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
                 resolvedName = ping.resolvedName;
             }
             if (ping.success && resolvedName.isEmpty()) {
-                resolvedName = reverseLookupName(ip);
+                resolvedName = resolveHostNameDeep(ip, adapter.id, timing.pingTimeoutMs);
             }
         }
     }
@@ -3728,12 +5190,15 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
     const bool hasReachabilitySignal = ping.success
         || !openPorts.isEmpty();
     if (resolvedName.isEmpty() && hasReachabilitySignal) {
-        resolvedName = reverseLookupName(ip);
+        resolvedName = resolveHostNameDeep(ip, adapter.id, timing.pingTimeoutMs);
     }
 
     QString bestResolvedName = resolvedName;
     if (bestResolvedName.isEmpty()) {
         bestResolvedName = cachedResolvedName(row.ip, row.mac);
+    }
+    if (bestResolvedName.isEmpty() && containsValueInsensitive(openPorts, QStringLiteral("62078"))) {
+        bestResolvedName = resolveAppleLockdownName(row.ip, qMin(850, timing.pingTimeoutMs + 220));
     }
     if (!bestResolvedName.isEmpty()) {
         rememberResolvedName(row.ip, row.mac, bestResolvedName);
@@ -3742,7 +5207,7 @@ ScanRecord NetworkScanService::probeHost(const QString& ip, const AdapterInfo& a
     row.vendor = vendorDisplayText(bestResolvedName, row.mac, m_vendorDb);
     row.name = routeDisplayForHost(adapter, row);
     row.webDetect = detectWebService(ip, openPorts);
-    row.typeHint = detectTypeHint(openPorts, ping.success, row.onLink);
+    row.typeHint = detectTypeHint(openPorts, ping.success, row.onLink, row.hostName, row.vendor, row.mac);
     row.speed = ping.success ? QStringLiteral("icmp") : QStringLiteral("link");
     return row;
 }
@@ -3835,6 +5300,28 @@ NetworkScanService::PingResult NetworkScanService::pingHost(const QString& ip, c
         const int pingMs = qMax(1, qRound(value.toDouble()));
         result.success = true;
         result.display = QStringLiteral("%1 ms").arg(pingMs);
+        return result;
+    }
+
+    static const QRegularExpression summaryRe(QStringLiteral("=\\s*[0-9]+(?:[\\.,][0-9]+)?/([0-9]+(?:[\\.,][0-9]+)?)/[0-9]+(?:[\\.,][0-9]+)?/[0-9]+(?:[\\.,][0-9]+)?\\s*(?:ms|мс)"),
+                                              QRegularExpression::CaseInsensitiveOption);
+    const auto summaryMatch = summaryRe.match(output);
+    if (summaryMatch.hasMatch()) {
+        QString value = summaryMatch.captured(1);
+        value.replace(QLatin1Char(','), QLatin1Char('.'));
+        result.success = true;
+        result.display = QStringLiteral("%1 ms").arg(qMax(1, qRound(value.toDouble())));
+        return result;
+    }
+
+    static const QRegularExpression averageRe(QStringLiteral("(?:Average|avg|Среднее)\\s*=\\s*([0-9]+(?:[\\.,][0-9]+)?)\\s*(?:ms|мс)?"),
+                                              QRegularExpression::CaseInsensitiveOption);
+    const auto averageMatch = averageRe.match(output);
+    if (averageMatch.hasMatch()) {
+        QString value = averageMatch.captured(1);
+        value.replace(QLatin1Char(','), QLatin1Char('.'));
+        result.success = true;
+        result.display = QStringLiteral("%1 ms").arg(qMax(1, qRound(value.toDouble())));
         return result;
     }
 
@@ -4036,6 +5523,9 @@ QString NetworkScanService::detectWebService(const QString& ip, const QStringLis
     if (containsValueInsensitive(openPorts, QStringLiteral("8443"))) {
         endpoints.append(QStringLiteral("https://%1:8443").arg(ip));
     }
+    if (containsValueInsensitive(openPorts, QStringLiteral("9443"))) {
+        endpoints.append(QStringLiteral("https://%1:9443").arg(ip));
+    }
     if (containsValueInsensitive(openPorts, QStringLiteral("5001"))) {
         endpoints.append(QStringLiteral("https://%1:5001").arg(ip));
     }
@@ -4045,11 +5535,38 @@ QString NetworkScanService::detectWebService(const QString& ip, const QStringLis
     if (containsValueInsensitive(openPorts, QStringLiteral("8080"))) {
         endpoints.append(QStringLiteral("http://%1:8080").arg(ip));
     }
+    if (containsValueInsensitive(openPorts, QStringLiteral("8081"))) {
+        endpoints.append(QStringLiteral("http://%1:8081").arg(ip));
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("8090"))) {
+        endpoints.append(QStringLiteral("http://%1:8090").arg(ip));
+    }
     if (containsValueInsensitive(openPorts, QStringLiteral("5000"))) {
         endpoints.append(QStringLiteral("http://%1:5000").arg(ip));
     }
     if (containsValueInsensitive(openPorts, QStringLiteral("7000"))) {
         endpoints.append(QStringLiteral("http://%1:7000").arg(ip));
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("8000"))) {
+        endpoints.append(QStringLiteral("http://%1:8000").arg(ip));
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("8008"))) {
+        endpoints.append(QStringLiteral("http://%1:8008").arg(ip));
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("8060"))) {
+        endpoints.append(QStringLiteral("http://%1:8060").arg(ip));
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("8888"))) {
+        endpoints.append(QStringLiteral("http://%1:8888").arg(ip));
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("9000"))) {
+        endpoints.append(QStringLiteral("http://%1:9000").arg(ip));
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("9090"))) {
+        endpoints.append(QStringLiteral("http://%1:9090").arg(ip));
+    }
+    if (containsValueInsensitive(openPorts, QStringLiteral("10000"))) {
+        endpoints.append(QStringLiteral("http://%1:10000").arg(ip));
     }
     if (!endpoints.isEmpty()) {
         return endpoints.join(QStringLiteral(" | "));
@@ -4130,6 +5647,16 @@ QHash<QString, QString> NetworkScanService::captureArpTable(const QString& adapt
             entries.insert(ip, mac);
         }
     }
+    for (auto it = entries.constBegin(); it != entries.constEnd(); ++it) {
+        const QString ip = it.key();
+        const QString mac = it.value();
+        if (ip.startsWith(QStringLiteral("169.254.")) && mac != QStringLiteral("-")) {
+            const QString name = reverseLookupName(ip);
+            if (!name.isEmpty()) {
+                rememberResolvedName(ip, mac, name);
+            }
+        }
+    }
 #else
     const QString output = runCommandCapture(QStringLiteral("arp"), {QStringLiteral("-a")}, false, &exitStatus);
     if (exitStatus < 0) {
@@ -4152,7 +5679,7 @@ QHash<QString, QString> NetworkScanService::captureArpTable(const QString& adapt
 }
 
 QString NetworkScanService::resolveName(const QString& ip) {
-    const QString reverseName = reverseLookupName(ip);
+    const QString reverseName = resolveHostNameDeep(ip, QString(), 1200);
     if (!reverseName.isEmpty()) {
         return reverseName;
     }
