@@ -86,7 +86,7 @@ QWidget* MainWindow::createScanPage() {
     m_scanAutoIpCheck->setChecked(true);
     optionsRow->addWidget(m_scanAutoIpCheck);
     m_scanAutoScanCheck = new QCheckBox(uiText(language, "авто скан", "auto scan"), toolbar);
-    m_scanAutoScanCheck->setChecked(m_settings->value(QStringLiteral("auto_scan_enabled"), false).toBool(false));
+    m_scanAutoScanCheck->setChecked(m_settings->value(QStringLiteral("auto_scan_enabled"), true).toBool(true));
     optionsRow->addWidget(m_scanAutoScanCheck);
     optionsRow->addSpacing(12);
     optionsRow->addWidget(new QLabel(uiText(language, "Маска:", "Mask:"), toolbar));
@@ -156,6 +156,13 @@ QWidget* MainWindow::createScanPage() {
     m_scanProfileButton->setMenu(m_scanProfileMenu);
     optionsRow->addWidget(m_scanProfileButton);
 
+    m_scanPingHealthButton = new QToolButton(toolbar);
+    m_scanPingHealthButton->setObjectName(QStringLiteral("scanGearButton"));
+    m_scanPingHealthButton->setAutoRaise(true);
+    m_scanPingHealthButton->setCheckable(true);
+    m_scanPingHealthButton->setChecked(m_settings->value(QStringLiteral("scan_ping_health_colors"), false).toBool(false));
+    optionsRow->addWidget(m_scanPingHealthButton);
+
     optionsRow->addStretch(1);
     toolbarLayout->addLayout(optionsRow);
 
@@ -173,6 +180,7 @@ QWidget* MainWindow::createScanPage() {
     });
     connect(m_scanStopButton, &QPushButton::clicked, this, &MainWindow::stopScan);
     connect(m_scanSortButton, &QPushButton::clicked, this, &MainWindow::toggleScanSortOrder);
+    connect(m_scanPingHealthButton, &QToolButton::toggled, this, &MainWindow::setScanPingHealthColors);
     connect(m_scanStartIp, &QLineEdit::returnPressed, this, &MainWindow::startScan);
     connect(m_scanEndIp, &QLineEdit::returnPressed, this, &MainWindow::startScan);
     connect(m_scanAdapterCombo, &QComboBox::currentIndexChanged, this, [this](int) {
@@ -415,7 +423,6 @@ QWidget* MainWindow::createSerialPage() {
     m_serialWidgets.eolCombo->addItem(QStringLiteral("LF"), QStringLiteral("lf"));
     m_serialWidgets.eolCombo->addItem(QStringLiteral("CRLF"), QStringLiteral("crlf"));
     m_serialWidgets.connectButton = new QPushButton(uiText(language, "Подключить", "Connect"), top);
-    auto* refreshButton = new QPushButton(uiText(language, "Обновить", "Refresh"), top);
 
     topLayout->addWidget(new QLabel(uiText(language, "Порт", "Port"), top), 0, 0);
     topLayout->addWidget(m_serialWidgets.portCombo, 0, 1);
@@ -432,8 +439,7 @@ QWidget* MainWindow::createSerialPage() {
     topLayout->addWidget(new QLabel(uiText(language, "Окончание", "Line ending"), top), 1, 4);
     topLayout->addWidget(m_serialWidgets.eolCombo, 1, 5);
     topLayout->addWidget(m_serialWidgets.hexCheck, 1, 6);
-    topLayout->addWidget(refreshButton, 1, 7);
-    topLayout->addWidget(m_serialWidgets.connectButton, 1, 8);
+    topLayout->addWidget(m_serialWidgets.connectButton, 1, 7);
     root->addWidget(top);
 
     m_serialWidgets.outputBox = new QTextEdit(page);
@@ -457,7 +463,7 @@ QWidget* MainWindow::createSerialPage() {
     for (int i = 0; i < 3; ++i) {
         auto* quickEdit = new QLineEdit(sendBox);
         quickEdit->setPlaceholderText(uiText(language, "Команда %1", "Command %1").arg(i + 1));
-        auto* quickButton = new QPushButton(QStringLiteral("▶ %1").arg(i + 1), sendBox);
+        auto* quickButton = new QPushButton(QString::number(i + 1), sendBox);
         m_serialWidgets.quickEdits.append(quickEdit);
         sendLayout->addWidget(new QLabel(QStringLiteral("Cmd %1").arg(i + 1), sendBox), i + 1, 0);
         sendLayout->addWidget(quickEdit, i + 1, 1);
@@ -467,7 +473,6 @@ QWidget* MainWindow::createSerialPage() {
     }
     root->addWidget(sendBox);
 
-    connect(refreshButton, &QPushButton::clicked, this, &MainWindow::refreshSerialPorts);
     connect(m_serialWidgets.connectButton, &QPushButton::clicked, this, &MainWindow::toggleSerial);
     connect(sendButton, &QPushButton::clicked, this, &MainWindow::sendSerialPayload);
     connect(m_serialWidgets.inputEdit, &QLineEdit::returnPressed, this, &MainWindow::sendSerialPayload);
@@ -475,6 +480,9 @@ QWidget* MainWindow::createSerialPage() {
     connect(m_serialWidgets.eolCombo, &QComboBox::currentTextChanged, this, [this]() { saveQuickCommands(QStringLiteral("serial"), m_serialWidgets); });
 
     refreshSerialPorts();
+    if (m_serialPortRefreshTimer != nullptr && !m_serialPortRefreshTimer->isActive()) {
+        m_serialPortRefreshTimer->start();
+    }
     {
         const auto section = m_settings->section(QStringLiteral("serial"));
         m_serialWidgets.baudCombo->setCurrentText(section.value(QStringLiteral("baud")).toString(QStringLiteral("9600")));
@@ -531,13 +539,13 @@ QWidget* MainWindow::createTcpPage() {
     topLayout->addWidget(m_tcpWidgets.portSpin, 0, 3);
     topLayout->addWidget(new QLabel(uiText(language, "Локальный порт", "Local port"), top), 0, 4);
     topLayout->addWidget(m_tcpWidgets.localPortSpin, 0, 5);
-    topLayout->addWidget(m_tcpWidgets.noDelayCheck, 1, 0);
-    topLayout->addWidget(m_tcpWidgets.keepAliveCheck, 1, 1);
-    topLayout->addWidget(m_tcpWidgets.autoPortCheck, 1, 2);
-    topLayout->addWidget(new QLabel(uiText(language, "Окончание", "Line ending"), top), 1, 3);
-    topLayout->addWidget(m_tcpWidgets.eolCombo, 1, 4);
+    topLayout->addWidget(m_tcpWidgets.connectButton, 0, 6);
+    topLayout->addWidget(new QLabel(uiText(language, "Окончание", "Line ending"), top), 1, 0);
+    topLayout->addWidget(m_tcpWidgets.eolCombo, 1, 1);
+    topLayout->addWidget(m_tcpWidgets.noDelayCheck, 1, 2);
+    topLayout->addWidget(m_tcpWidgets.keepAliveCheck, 1, 3);
+    topLayout->addWidget(m_tcpWidgets.autoPortCheck, 1, 4);
     topLayout->addWidget(m_tcpWidgets.hexCheck, 1, 5);
-    topLayout->addWidget(m_tcpWidgets.connectButton, 1, 6);
     topLayout->setColumnStretch(1, 1);
     topLayout->setColumnStretch(6, 0);
     root->addWidget(top);
@@ -563,7 +571,7 @@ QWidget* MainWindow::createTcpPage() {
     for (int i = 0; i < 3; ++i) {
         auto* quickEdit = new QLineEdit(sendBox);
         quickEdit->setPlaceholderText(uiText(language, "Команда %1", "Command %1").arg(i + 1));
-        auto* quickButton = new QPushButton(QStringLiteral("▶ %1").arg(i + 1), sendBox);
+        auto* quickButton = new QPushButton(QString::number(i + 1), sendBox);
         m_tcpWidgets.quickEdits.append(quickEdit);
         sendLayout->addWidget(new QLabel(QStringLiteral("Cmd %1").arg(i + 1), sendBox), i + 1, 0);
         sendLayout->addWidget(quickEdit, i + 1, 1);
@@ -640,14 +648,14 @@ QWidget* MainWindow::createUdpPage() {
     topLayout->addWidget(m_udpWidgets.remotePortSpin, 0, 3);
     topLayout->addWidget(new QLabel(uiText(language, "Локальный порт", "Local port"), top), 0, 4);
     topLayout->addWidget(m_udpWidgets.localPortSpin, 0, 5);
-    topLayout->addWidget(m_udpWidgets.reuseAddressCheck, 1, 0);
-    topLayout->addWidget(m_udpWidgets.autoPortCheck, 1, 1);
-    topLayout->addWidget(new QLabel(uiText(language, "Окончание", "Line ending"), top), 1, 2);
-    topLayout->addWidget(m_udpWidgets.eolCombo, 1, 3);
+    topLayout->addWidget(m_udpWidgets.connectButton, 0, 6);
+    topLayout->addWidget(new QLabel(uiText(language, "Окончание", "Line ending"), top), 1, 0);
+    topLayout->addWidget(m_udpWidgets.eolCombo, 1, 1);
+    topLayout->addWidget(m_udpWidgets.reuseAddressCheck, 1, 2);
+    topLayout->addWidget(m_udpWidgets.autoPortCheck, 1, 3);
     topLayout->addWidget(m_udpWidgets.hexCheck, 1, 4);
-    topLayout->addWidget(m_udpWidgets.connectButton, 1, 5);
     topLayout->setColumnStretch(1, 1);
-    topLayout->setColumnStretch(5, 0);
+    topLayout->setColumnStretch(6, 0);
     root->addWidget(top);
 
     m_udpWidgets.outputBox = new QTextEdit(page);
@@ -671,7 +679,7 @@ QWidget* MainWindow::createUdpPage() {
     for (int i = 0; i < 3; ++i) {
         auto* quickEdit = new QLineEdit(sendBox);
         quickEdit->setPlaceholderText(uiText(language, "Команда %1", "Command %1").arg(i + 1));
-        auto* quickButton = new QPushButton(QStringLiteral("▶ %1").arg(i + 1), sendBox);
+        auto* quickButton = new QPushButton(QString::number(i + 1), sendBox);
         m_udpWidgets.quickEdits.append(quickEdit);
         sendLayout->addWidget(new QLabel(QStringLiteral("Cmd %1").arg(i + 1), sendBox), i + 1, 0);
         sendLayout->addWidget(quickEdit, i + 1, 1);
@@ -842,6 +850,8 @@ QWidget* MainWindow::createSnmpPage() {
     m_snmpWidgets.versionCombo->addItem(QStringLiteral("SNMP v3"), QStringLiteral("3"));
     m_snmpWidgets.loadButton = new QPushButton(uiText(language, "Опросить все OID", "Walk all OIDs"), toolbar);
     m_snmpWidgets.loadButton->setObjectName(QStringLiteral("scanStartButton"));
+    m_snmpWidgets.communityLoadButton = new QPushButton(uiText(language, "Опросить все OID", "Walk all OIDs"), toolbar);
+    m_snmpWidgets.communityLoadButton->setObjectName(QStringLiteral("scanStartButton"));
 
     m_snmpWidgets.communityEdit = new QLineEdit(toolbar);
     m_snmpWidgets.writeCommunityEdit = new QLineEdit(toolbar);
@@ -896,6 +906,8 @@ QWidget* MainWindow::createSnmpPage() {
     configureSnmpField(m_snmpWidgets.filterEdit, 255);
     m_snmpWidgets.loadButton->setFixedHeight(19);
     m_snmpWidgets.loadButton->setFixedWidth(118);
+    m_snmpWidgets.communityLoadButton->setFixedHeight(19);
+    m_snmpWidgets.communityLoadButton->setFixedWidth(118);
 
     auto* primaryRow = new QHBoxLayout();
     primaryRow->setContentsMargins(0, 0, 0, 0);
@@ -918,6 +930,7 @@ QWidget* MainWindow::createSnmpPage() {
     communityLayout->addWidget(m_snmpWidgets.communityEdit);
     communityLayout->addWidget(new QLabel(uiText(language, "Запись:", "Write:"), communityPage));
     communityLayout->addWidget(m_snmpWidgets.writeCommunityEdit);
+    communityLayout->addWidget(m_snmpWidgets.communityLoadButton);
     m_snmpWidgets.securityStack->addWidget(communityPage);
 
     auto* v3Page = new QWidget(m_snmpWidgets.securityStack);
@@ -942,6 +955,7 @@ QWidget* MainWindow::createSnmpPage() {
     v3Row2->addWidget(m_snmpWidgets.v3PrivacyProtocolCombo);
     v3Row2->addWidget(new QLabel(uiText(language, "Privacy pass:", "Privacy pass:"), v3Page));
     v3Row2->addWidget(m_snmpWidgets.v3PrivacyPasswordEdit);
+    v3Row2->addWidget(m_snmpWidgets.loadButton);
     v3Layout->addLayout(v3Row1);
     v3Layout->addLayout(v3Row2);
     m_snmpWidgets.securityStack->addWidget(v3Page);
@@ -949,7 +963,6 @@ QWidget* MainWindow::createSnmpPage() {
     securityRow->setContentsMargins(0, 0, 0, 0);
     securityRow->setSpacing(5);
     securityRow->addWidget(m_snmpWidgets.securityStack, 0, Qt::AlignLeft);
-    securityRow->addWidget(m_snmpWidgets.loadButton, 0, Qt::AlignTop);
     securityRow->addStretch(1);
     toolbarLayout->addLayout(securityRow);
 
@@ -1011,6 +1024,7 @@ QWidget* MainWindow::createSnmpPage() {
     m_snmpWidgets.v3PrivacyPasswordEdit->setText(snmpSection.value(QStringLiteral("v3_privacy_password")).toString());
 
     connect(m_snmpWidgets.loadButton, &QPushButton::clicked, this, &MainWindow::loadSnmpOidList);
+    connect(m_snmpWidgets.communityLoadButton, &QPushButton::clicked, this, &MainWindow::loadSnmpOidList);
     connect(m_snmpWidgets.table, &QTableWidget::itemChanged, this, &MainWindow::handleSnmpValueEdited);
     connect(m_snmpWidgets.filterEdit, &QLineEdit::textChanged, this, [this](const QString&) {
         applySnmpTableFilter();

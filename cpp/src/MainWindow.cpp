@@ -670,6 +670,59 @@ QIcon scanGaugeIcon(const QColor& color, const QString& profile) {
     return QIcon(pixmap);
 }
 
+QIcon scanBulbIcon(const QColor& color, bool enabled) {
+    QPixmap pixmap(20, 20);
+    pixmap.fill(Qt::transparent);
+
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QColor bulbColor = enabled ? QColor("#f2c94c") : color;
+    painter.setPen(QPen(bulbColor, 1.55, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(enabled ? QColor(242, 201, 76, 80) : Qt::NoBrush);
+    painter.drawEllipse(QRectF(5.3, 2.8, 9.4, 10.4));
+    painter.drawLine(QPointF(7.2, 13.8), QPointF(12.8, 13.8));
+    painter.drawLine(QPointF(7.8, 16.1), QPointF(12.2, 16.1));
+    painter.drawLine(QPointF(8.7, 18.0), QPointF(11.3, 18.0));
+    if (enabled) {
+        painter.setPen(QPen(QColor("#f7df7a"), 1.1, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawLine(QPointF(3.0, 6.0), QPointF(1.6, 5.0));
+        painter.drawLine(QPointF(17.0, 6.0), QPointF(18.4, 5.0));
+        painter.drawLine(QPointF(10.0, 1.2), QPointF(10.0, 0.2));
+    }
+    return QIcon(pixmap);
+}
+
+int pingMillisecondsFromText(const QString& value) {
+    const auto match = QRegularExpression(QStringLiteral("(\\d+)\\s*ms"), QRegularExpression::CaseInsensitiveOption).match(value);
+    if (!match.hasMatch()) {
+        return -1;
+    }
+    bool ok = false;
+    const int ms = match.captured(1).toInt(&ok);
+    return ok ? ms : -1;
+}
+
+bool pingHealthBrushes(const QString& value, QColor* background, QColor* foreground) {
+    const int ms = pingMillisecondsFromText(value);
+    if (ms < 0) {
+        return false;
+    }
+    if (ms <= 30) {
+        *background = QColor("#16351f");
+        *foreground = QColor("#8ff0a4");
+    } else if (ms <= 100) {
+        *background = QColor("#3a3217");
+        *foreground = QColor("#f2d16b");
+    } else if (ms <= 200) {
+        *background = QColor("#3e2818");
+        *foreground = QColor("#ffb16e");
+    } else {
+        *background = QColor("#421d22");
+        *foreground = QColor("#ff808b");
+    }
+    return true;
+}
+
 struct SnmpParsedLine {
     QString oid;
     QString rawType;
@@ -1389,11 +1442,15 @@ public:
         const QString language = settings != nullptr ? settings->language() : QStringLiteral("ru");
         setWindowTitle(uiText(language, "Настройки", "Settings"));
         setModal(true);
-        resize(560, 320);
+        resize(560, 280);
 
         auto* root = new QVBoxLayout(this);
-        root->setSpacing(8);
+        root->setContentsMargins(10, 8, 10, 8);
+        root->setSpacing(4);
         auto* scanForm = new QFormLayout();
+        scanForm->setContentsMargins(0, 0, 0, 0);
+        scanForm->setHorizontalSpacing(8);
+        scanForm->setVerticalSpacing(4);
 
         m_workersSpin = new QSpinBox(this);
         m_workersSpin->setRange(8, 128);
@@ -1462,7 +1519,7 @@ public:
 
         auto* checks = new QHBoxLayout();
         checks->setContentsMargins(0, 0, 0, 0);
-        checks->setSpacing(12);
+        checks->setSpacing(10);
         checks->addWidget(m_autoWorkersCheck);
         checks->addWidget(m_backgroundRefreshCheck);
         checks->addWidget(m_scanOnStartupCheck);

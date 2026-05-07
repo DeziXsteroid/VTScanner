@@ -81,6 +81,7 @@ private:
         QComboBox* v3PrivacyProtocolCombo {nullptr};
         QLineEdit* v3PrivacyPasswordEdit {nullptr};
         QPushButton* loadButton {nullptr};
+        QPushButton* communityLoadButton {nullptr};
         QLabel* statusLabel {nullptr};
         QTableWidget* table {nullptr};
     };
@@ -163,6 +164,8 @@ private:
     void toggleScanSortOrder();
     void refreshScanToolbarIcons();
     void updateScanProfileButton();
+    void updateScanPingHealthButton();
+    void setScanPingHealthColors(bool enabled);
     void setScanProfile(const QString& profile);
     void resetScanLog();
     void appendScanLogLine(const QString& line);
@@ -259,6 +262,7 @@ private:
     QPushButton* m_scanStopButton {nullptr};
     QToolButton* m_scanToolsButton {nullptr};
     QToolButton* m_scanProfileButton {nullptr};
+    QToolButton* m_scanPingHealthButton {nullptr};
     QMenu* m_scanToolsMenu {nullptr};
     QMenu* m_scanProfileMenu {nullptr};
     QMap<int, QAction*> m_scanColumnActions;
@@ -266,6 +270,7 @@ private:
     QTimer* m_scanAutoScanTimer {nullptr};
     QTimer* m_scanColumnWidthSaveTimer {nullptr};
     QTimer* m_scanBackgroundRefreshTimer {nullptr};
+    QTimer* m_serialPortRefreshTimer {nullptr};
     QMap<QString, QLabel*> m_hostLabels;
     QList<nt::ScanRecord> m_scanRows;
     QSet<QString> m_scanComparisonBaseline;

@@ -626,7 +626,14 @@ void MainWindow::rebuildScanTable() {
                 m_scanTable->setItem(rowIndex, col, item);
             }
             item->setText(col == ScanColumnIp ? scanIpCellText(safeRecord.ip, isNewHost) : values.at(col));
-            item->setBackground(QBrush(isGatewayHost ? gatewayBackground : defaultBackground));
+            QColor cellBackground = isGatewayHost ? gatewayBackground : defaultBackground;
+            QColor cellForeground = isGatewayHost ? gatewayForeground : defaultForeground;
+            if (col == ScanColumnPing
+                && m_settings != nullptr
+                && m_settings->value(QStringLiteral("scan_ping_health_colors"), false).toBool(false)) {
+                pingHealthBrushes(values.at(col), &cellBackground, &cellForeground);
+            }
+            item->setBackground(QBrush(cellBackground));
             if (col == ScanColumnIp) {
                 item->setData(Qt::UserRole, safeRecord.ip);
             }
@@ -645,7 +652,7 @@ void MainWindow::rebuildScanTable() {
             if (col == ScanColumnIp && isNewHost) {
                 item->setForeground(QBrush(QColor("#7fda72")));
             } else {
-                item->setForeground(QBrush(isGatewayHost ? gatewayForeground : defaultForeground));
+                item->setForeground(QBrush(cellForeground));
             }
             QFont font = item->font();
             font.setBold(isGatewayHost || (col == ScanColumnIp && isNewHost));
@@ -809,6 +816,7 @@ void MainWindow::refreshScanToolbarIcons() {
         m_scanToolsButton->setIconSize(QSize(18, 18));
     }
     updateScanProfileButton();
+    updateScanPingHealthButton();
 }
 
 void MainWindow::updateScanProfileButton() {
@@ -826,6 +834,34 @@ void MainWindow::updateScanProfileButton() {
             it.value()->setChecked(it.key() == profile);
         }
     }
+}
+
+void MainWindow::updateScanPingHealthButton() {
+    if (m_scanPingHealthButton == nullptr) {
+        return;
+    }
+    const bool enabled = m_settings != nullptr
+        && m_settings->value(QStringLiteral("scan_ping_health_colors"), false).toBool(false);
+    const QColor iconColor = isLightTheme() ? QColor("#5f6a76") : QColor("#c1ccd8");
+    QSignalBlocker blocker(m_scanPingHealthButton);
+    m_scanPingHealthButton->setChecked(enabled);
+    m_scanPingHealthButton->setIcon(scanBulbIcon(iconColor, enabled));
+    m_scanPingHealthButton->setIconSize(QSize(19, 19));
+    m_scanPingHealthButton->setToolTip(uiText(
+        m_settings,
+        "Подсветка ping: до 30 мс зеленый, 31-100 желтый, 101-200 оранжевый, выше 200 красный.",
+        "Ping colors: up to 30 ms green, 31-100 yellow, 101-200 orange, above 200 red."
+    ));
+}
+
+void MainWindow::setScanPingHealthColors(bool enabled) {
+    if (m_settings != nullptr) {
+        m_settings->setValue(QStringLiteral("scan_ping_health_colors"), enabled);
+        m_settings->save();
+    }
+    updateScanPingHealthButton();
+    refreshScanTableColors();
+    rebuildScanTable();
 }
 
 void MainWindow::setScanProfile(const QString& profile) {
@@ -919,7 +955,14 @@ void MainWindow::appendScanRecord(const nt::ScanRecord& record) {
         if (item->text() != cellText) {
             item->setText(cellText);
         }
-        item->setBackground(QBrush(isGatewayHost ? gatewayBackground : defaultBackground));
+        QColor cellBackground = isGatewayHost ? gatewayBackground : defaultBackground;
+        QColor cellForeground = isGatewayHost ? gatewayForeground : defaultForeground;
+        if (col == ScanColumnPing
+            && m_settings != nullptr
+            && m_settings->value(QStringLiteral("scan_ping_health_colors"), false).toBool(false)) {
+            pingHealthBrushes(values.at(col), &cellBackground, &cellForeground);
+        }
+        item->setBackground(QBrush(cellBackground));
         if (col == ScanColumnIp) {
             item->setData(Qt::UserRole, displayRecord.ip);
         }
@@ -938,7 +981,7 @@ void MainWindow::appendScanRecord(const nt::ScanRecord& record) {
         if (col == ScanColumnIp && isNewHost) {
             item->setForeground(QBrush(QColor("#7fda72")));
         } else {
-            item->setForeground(QBrush(isGatewayHost ? gatewayForeground : defaultForeground));
+            item->setForeground(QBrush(cellForeground));
         }
         QFont font = item->font();
         font.setBold(isGatewayHost || (col == ScanColumnIp && isNewHost));

@@ -68,7 +68,7 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Network Tools");
     app.setOrganizationName("NetWorkTools");
-    app.setApplicationVersion("1.0.9");
+    app.setApplicationVersion("1.1");
     nt::AppPaths::ensureRuntimeTree();
 
     MainWindow window;

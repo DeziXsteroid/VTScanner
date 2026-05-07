@@ -197,6 +197,9 @@ void MainWindow::loadSnmpOidList() {
     if (m_snmpWidgets.loadButton != nullptr) {
         m_snmpWidgets.loadButton->setEnabled(false);
     }
+    if (m_snmpWidgets.communityLoadButton != nullptr) {
+        m_snmpWidgets.communityLoadButton->setEnabled(false);
+    }
 
     auto* process = new QProcess(this);
     configureSnmpProcessEnvironment(process, snmpwalkPath);
@@ -214,6 +217,9 @@ void MainWindow::loadSnmpOidList() {
         if (m_snmpWidgets.loadButton != nullptr) {
             m_snmpWidgets.loadButton->setEnabled(true);
         }
+        if (m_snmpWidgets.communityLoadButton != nullptr) {
+            m_snmpWidgets.communityLoadButton->setEnabled(true);
+        }
         if (m_snmpWidgets.statusLabel != nullptr) {
             m_snmpWidgets.statusLabel->setStyleSheet(QStringLiteral("color:#ef7b7b;"));
             m_snmpWidgets.statusLabel->setText(uiText(m_settings, "Не удалось запустить snmpwalk.", "Failed to start snmpwalk."));
@@ -227,6 +233,9 @@ void MainWindow::loadSnmpOidList() {
         const bool timedOut = process->property("networktools_timeout").toBool();
         if (m_snmpWidgets.loadButton != nullptr) {
             m_snmpWidgets.loadButton->setEnabled(true);
+        }
+        if (m_snmpWidgets.communityLoadButton != nullptr) {
+            m_snmpWidgets.communityLoadButton->setEnabled(true);
         }
 
         if (exitStatus != QProcess::NormalExit || exitCode != 0) {
@@ -358,6 +367,9 @@ void MainWindow::applySnmpSelectedValue() {
     if (m_snmpWidgets.loadButton != nullptr) {
         m_snmpWidgets.loadButton->setEnabled(false);
     }
+    if (m_snmpWidgets.communityLoadButton != nullptr) {
+        m_snmpWidgets.communityLoadButton->setEnabled(false);
+    }
     if (m_snmpWidgets.statusLabel != nullptr) {
         m_snmpWidgets.statusLabel->setStyleSheet(QStringLiteral("color:#f2c36a;"));
         m_snmpWidgets.statusLabel->setText(uiText(m_settings, "Изменение OID...", "Updating OID..."));
@@ -382,6 +394,9 @@ void MainWindow::applySnmpSelectedValue() {
         if (m_snmpWidgets.loadButton != nullptr) {
             m_snmpWidgets.loadButton->setEnabled(true);
         }
+        if (m_snmpWidgets.communityLoadButton != nullptr) {
+            m_snmpWidgets.communityLoadButton->setEnabled(true);
+        }
         if (auto* valueItem = m_snmpWidgets.table->item(row, 3)) {
             m_snmpTablePopulating = true;
             valueItem->setText(previousValue);
@@ -400,6 +415,9 @@ void MainWindow::applySnmpSelectedValue() {
         const bool timedOut = process->property("networktools_timeout").toBool();
         if (m_snmpWidgets.loadButton != nullptr) {
             m_snmpWidgets.loadButton->setEnabled(true);
+        }
+        if (m_snmpWidgets.communityLoadButton != nullptr) {
+            m_snmpWidgets.communityLoadButton->setEnabled(true);
         }
 
         if (exitStatus != QProcess::NormalExit || exitCode != 0) {

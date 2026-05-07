@@ -142,14 +142,13 @@ void MainWindow::openHttpHistory() {
 }
 
 void MainWindow::refreshSerialPorts() {
-    const QString current = m_serialWidgets.portCombo != nullptr ? m_serialWidgets.portCombo->currentData().toString() : QString();
-    const QString preferred = current.isEmpty()
-        ? m_settings->section(QStringLiteral("serial")).value(QStringLiteral("port_name")).toString()
-        : current;
     if (m_serialWidgets.portCombo == nullptr) {
         return;
     }
-    m_serialWidgets.portCombo->clear();
+    const QString current = m_serialWidgets.portCombo->currentData().toString();
+    const QString preferred = current.isEmpty()
+        ? m_settings->section(QStringLiteral("serial")).value(QStringLiteral("port_name")).toString()
+        : current;
     auto ports = QSerialPortInfo::availablePorts();
     std::sort(ports.begin(), ports.end(), [](const auto& left, const auto& right) {
         const bool leftCu = left.portName().startsWith(QStringLiteral("cu."));
@@ -159,13 +158,29 @@ void MainWindow::refreshSerialPorts() {
         }
         return left.portName().toLower() < right.portName().toLower();
     });
+    QList<QPair<QString, QString>> entries;
     if (ports.isEmpty()) {
-        m_serialWidgets.portCombo->addItem(uiText(m_settings, "(портов нет)", "(no ports)"), QString());
+        entries.append({uiText(m_settings, "(портов нет)", "(no ports)"), QString()});
+    } else {
+        for (const auto& port : ports) {
+            const QString label = QStringLiteral("%1 - %2").arg(port.portName(), port.description().trimmed().isEmpty() ? port.portName() : port.description());
+            entries.append({label, port.portName()});
+        }
+    }
+
+    bool changed = m_serialWidgets.portCombo->count() != entries.size();
+    for (int i = 0; !changed && i < entries.size(); ++i) {
+        changed = m_serialWidgets.portCombo->itemText(i) != entries.at(i).first
+            || m_serialWidgets.portCombo->itemData(i).toString() != entries.at(i).second;
+    }
+    if (!changed) {
         return;
     }
-    for (const auto& port : ports) {
-        const QString label = QStringLiteral("%1 - %2").arg(port.portName(), port.description().trimmed().isEmpty() ? port.portName() : port.description());
-        m_serialWidgets.portCombo->addItem(label, port.portName());
+
+    QSignalBlocker blocker(m_serialWidgets.portCombo);
+    m_serialWidgets.portCombo->clear();
+    for (const auto& entry : entries) {
+        m_serialWidgets.portCombo->addItem(entry.first, entry.second);
     }
     const int index = m_serialWidgets.portCombo->findData(preferred);
     m_serialWidgets.portCombo->setCurrentIndex(index >= 0 ? index : 0);

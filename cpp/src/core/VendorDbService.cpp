@@ -240,7 +240,7 @@ bool VendorDbService::updateFromNetwork(int timeoutMs) {
     for (const auto& urlString : candidateUrls()) {
         QNetworkRequest request{QUrl(urlString)};
         request.setTransferTimeout(timeoutMs);
-    request.setRawHeader("User-Agent", QByteArrayLiteral("NetWorkToolsQt/1.0.9"));
+    request.setRawHeader("User-Agent", QByteArrayLiteral("NetWorkToolsQt/1.1"));
 
         QEventLoop loop;
         QTimer timer;

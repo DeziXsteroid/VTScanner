@@ -94,6 +94,9 @@ MainWindow::MainWindow(QWidget* parent)
     m_scanBackgroundRefreshTimer = new QTimer(this);
     m_scanBackgroundRefreshTimer->setSingleShot(true);
     m_scanBackgroundRefreshTimer->setInterval(qMax(5, m_settings->value(QStringLiteral("auto_scan_interval_sec"), 30).toInt(30)) * 1000);
+    m_serialPortRefreshTimer = new QTimer(this);
+    m_serialPortRefreshTimer->setSingleShot(false);
+    m_serialPortRefreshTimer->setInterval(10000);
 
     qRegisterMetaType<nt::ScanRecord>("nt::ScanRecord");
     qRegisterMetaType<QList<nt::ScanRecord>>("QList<nt::ScanRecord>");
@@ -128,6 +131,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_scanBackgroundRefreshTimer, &QTimer::timeout, this, [this]() {
         startScanBackgroundRefresh();
     });
+    connect(m_serialPortRefreshTimer, &QTimer::timeout, this, &MainWindow::refreshSerialPorts);
     connect(m_vendorDb, &nt::VendorDbService::statusChanged, this, [this](const QString&, bool available) {
         if (!available || m_scanRows.isEmpty()) {
             return;
@@ -163,7 +167,7 @@ MainWindow::MainWindow(QWidget* parent)
             });
         });
     }
-    const bool autoScanEnabled = m_settings->value(QStringLiteral("auto_scan_enabled"), false).toBool(false);
+    const bool autoScanEnabled = m_settings->value(QStringLiteral("auto_scan_enabled"), true).toBool(true);
     const bool scanOnStartup = m_settings->value(QStringLiteral("scan_on_startup"), false).toBool(false);
     if (autoScanEnabled || scanOnStartup) {
         QTimer::singleShot(250, this, [this]() {
@@ -859,8 +863,15 @@ void MainWindow::refreshScanTableColors() {
             if (item == nullptr) {
                 continue;
             }
-            item->setBackground(QBrush(isGatewayHost ? gatewayBackground : defaultBackground));
-            item->setForeground(QBrush(isGatewayHost ? gatewayForeground : defaultForeground));
+            QColor cellBackground = isGatewayHost ? gatewayBackground : defaultBackground;
+            QColor cellForeground = isGatewayHost ? gatewayForeground : defaultForeground;
+            if (col == ScanColumnPing
+                && m_settings != nullptr
+                && m_settings->value(QStringLiteral("scan_ping_health_colors"), false).toBool(false)) {
+                pingHealthBrushes(item->text(), &cellBackground, &cellForeground);
+            }
+            item->setBackground(QBrush(cellBackground));
+            item->setForeground(QBrush(cellForeground));
             QFont font = item->font();
             font.setBold(isGatewayHost);
             item->setFont(font);

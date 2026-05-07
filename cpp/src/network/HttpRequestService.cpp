@@ -39,7 +39,7 @@ void HttpRequestService::send(const HttpRequestSpec& spec) {
         request.setRawHeader(it.key().toUtf8(), it->toVariant().toString().toUtf8());
     }
     if (!hasUserAgent) {
-    request.setRawHeader("User-Agent", QByteArrayLiteral("NetworkToolsQt/1.0.9"));
+    request.setRawHeader("User-Agent", QByteArrayLiteral("NetworkToolsQt/1.1"));
     }
 
     if (!spec.username.isEmpty()) {

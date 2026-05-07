@@ -145,9 +145,10 @@ QJsonObject SettingsService::defaultConfig() {
         {QStringLiteral("scan_profile_user_selected"), false},
         {QStringLiteral("scan_background_refresh"), false},
         {QStringLiteral("scan_routed_ranges"), false},
-        {QStringLiteral("auto_scan_enabled"), false},
+        {QStringLiteral("auto_scan_enabled"), true},
         {QStringLiteral("auto_scan_interval_sec"), 30},
         {QStringLiteral("scan_on_startup"), false},
+        {QStringLiteral("scan_ping_health_colors"), false},
         {QStringLiteral("vendor_auto_update"), true},
         {QStringLiteral("http_history"), QJsonArray{}},
         {QStringLiteral("window"), QJsonObject{
