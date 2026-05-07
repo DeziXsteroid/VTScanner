@@ -7,7 +7,7 @@
 <br>
 <br>
 
-[![Download for macOS](https://img.shields.io/badge/Download-macOS%20Apple%20Silicon-111111?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest/download/Network-Tools-macos-apple-silicon.dmg) [![Download Windows X64](https://img.shields.io/badge/Download-Windows%20X64-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest/download/Network-Tools-1.0.9-Setup-win64.exe)
+[![Download for macOS](https://img.shields.io/badge/Download-macOS%20Apple%20Silicon-111111?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest/download/Network-Tools-macos-apple-silicon.dmg) [![Download Windows X64](https://img.shields.io/badge/Download-Windows%20X64-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest/download/Network-Tools-1.0.9-Setup-win64.exe)
 
 </div>
 
