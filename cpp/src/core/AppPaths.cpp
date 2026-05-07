@@ -41,11 +41,17 @@ QString AppPaths::vendorSeedPath() {
 }
 
 QString AppPaths::bundledToolPath(const QString& name) {
-    const QString appDirCandidate = QCoreApplication::applicationDirPath() + QStringLiteral("/bin/") + name;
+    QString executableName = name;
+#ifdef Q_OS_WIN
+    if (!executableName.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive)) {
+        executableName += QStringLiteral(".exe");
+    }
+#endif
+    const QString appDirCandidate = QCoreApplication::applicationDirPath() + QStringLiteral("/bin/") + executableName;
     if (QFileInfo::exists(appDirCandidate)) {
         return appDirCandidate;
     }
-    return QCoreApplication::applicationDirPath() + QStringLiteral("/../Resources/bin/") + name;
+    return QCoreApplication::applicationDirPath() + QStringLiteral("/../Resources/bin/") + executableName;
 }
 
 QString AppPaths::settingsPath() {

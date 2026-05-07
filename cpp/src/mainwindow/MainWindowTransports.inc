@@ -225,10 +225,37 @@ void MainWindow::toggleTcp() {
         return;
     }
     m_tcpWidgets.outputBox->clear();
+    quint16 remotePort = static_cast<quint16>(m_tcpWidgets.portSpin->value());
+    if (m_tcpWidgets.autoPortCheck != nullptr && m_tcpWidgets.autoPortCheck->isChecked()) {
+        appendTrafficEntry(
+            m_tcpWidgets.outputBox,
+            QColor("#b0bac5"),
+            QStringLiteral("INFO"),
+            uiText(m_settings, "Поиск открытого TCP-порта...", "Searching open TCP port...")
+        );
+        const quint16 detectedPort = detectOpenTcpPort(host, remotePort);
+        if (detectedPort == 0) {
+            appendTrafficEntry(
+                m_tcpWidgets.outputBox,
+                QColor("#d8b45d"),
+                QStringLiteral("WARN"),
+                uiText(m_settings, "Автопорт TCP не найден, используется выбранный порт.", "TCP auto port was not found, using the selected port.")
+            );
+        } else {
+            remotePort = detectedPort;
+            m_tcpWidgets.portSpin->setValue(remotePort);
+            appendTrafficEntry(
+                m_tcpWidgets.outputBox,
+                QColor("#7fda72"),
+                QStringLiteral("INFO"),
+                uiText(m_settings, "Найден TCP-порт %1", "Detected TCP port %1").arg(remotePort)
+            );
+        }
+    }
     QString error;
     if (!m_tcpSession->open(
             host,
-            static_cast<quint16>(m_tcpWidgets.portSpin->value()),
+            remotePort,
             static_cast<quint16>(m_tcpWidgets.localPortSpin->value()),
             m_tcpWidgets.noDelayCheck->isChecked(),
             m_tcpWidgets.keepAliveCheck->isChecked(),
@@ -242,6 +269,7 @@ void MainWindow::toggleTcp() {
     section.insert(QStringLiteral("local_port"), m_tcpWidgets.localPortSpin->value());
     section.insert(QStringLiteral("no_delay"), m_tcpWidgets.noDelayCheck->isChecked());
     section.insert(QStringLiteral("keep_alive"), m_tcpWidgets.keepAliveCheck->isChecked());
+    section.insert(QStringLiteral("auto_port"), m_tcpWidgets.autoPortCheck != nullptr && m_tcpWidgets.autoPortCheck->isChecked());
     m_settings->setSection(QStringLiteral("tcp"), section);
     m_settings->save();
 }
@@ -251,16 +279,51 @@ void MainWindow::toggleUdp() {
         m_udpSession->close();
         return;
     }
+    const QString host = m_udpWidgets.hostEdit->text().trimmed();
+    quint16 remotePort = static_cast<quint16>(m_udpWidgets.remotePortSpin->value());
+    if (m_udpWidgets.autoPortCheck != nullptr && m_udpWidgets.autoPortCheck->isChecked()) {
+        if (host.isEmpty()) {
+            QMessageBox::warning(this, QStringLiteral("UDP"), uiText(m_settings, "Поле хоста пустое.", "Host field is empty."));
+            return;
+        }
+        m_udpWidgets.outputBox->clear();
+        appendTrafficEntry(
+            m_udpWidgets.outputBox,
+            QColor("#b0bac5"),
+            QStringLiteral("INFO"),
+            uiText(m_settings, "Поиск ответного UDP-порта...", "Searching responsive UDP port...")
+        );
+        const QByteArray probe = payloadFromText(m_udpWidgets.inputEdit != nullptr ? m_udpWidgets.inputEdit->text() : QString(), m_udpWidgets.hexCheck != nullptr && m_udpWidgets.hexCheck->isChecked());
+        const quint16 detectedPort = detectResponsiveUdpPort(host, remotePort, probe);
+        if (detectedPort == 0) {
+            appendTrafficEntry(
+                m_udpWidgets.outputBox,
+                QColor("#d8b45d"),
+                QStringLiteral("WARN"),
+                uiText(m_settings, "Автопорт UDP не ответил, используется выбранный порт.", "UDP auto port did not respond, using the selected port.")
+            );
+        } else {
+            remotePort = detectedPort;
+            m_udpWidgets.remotePortSpin->setValue(remotePort);
+            appendTrafficEntry(
+                m_udpWidgets.outputBox,
+                QColor("#7fda72"),
+                QStringLiteral("INFO"),
+                uiText(m_settings, "Найден UDP-порт %1", "Detected UDP port %1").arg(remotePort)
+            );
+        }
+    }
     QString error;
     if (!m_udpSession->bind(static_cast<quint16>(m_udpWidgets.localPortSpin->value()), m_udpWidgets.reuseAddressCheck->isChecked(), &error)) {
         QMessageBox::critical(this, QStringLiteral("UDP"), error);
         return;
     }
     auto section = m_settings->section(QStringLiteral("udp"));
-    section.insert(QStringLiteral("host"), m_udpWidgets.hostEdit->text().trimmed());
-    section.insert(QStringLiteral("remote_port"), m_udpWidgets.remotePortSpin->value());
+    section.insert(QStringLiteral("host"), host);
+    section.insert(QStringLiteral("remote_port"), remotePort);
     section.insert(QStringLiteral("local_port"), m_udpWidgets.localPortSpin->value());
     section.insert(QStringLiteral("reuse_address"), m_udpWidgets.reuseAddressCheck->isChecked());
+    section.insert(QStringLiteral("auto_port"), m_udpWidgets.autoPortCheck != nullptr && m_udpWidgets.autoPortCheck->isChecked());
     m_settings->setSection(QStringLiteral("udp"), section);
     m_settings->save();
     appendTrafficEntry(
@@ -655,4 +718,3 @@ QTextCharFormat* MainWindow::sessionTerminalFormatForBox(QTextEdit* box) {
     }
     return nullptr;
 }
-

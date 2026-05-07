@@ -853,7 +853,7 @@ void MainWindow::refreshScanTableColors() {
             && gatewayItem != nullptr
             && !gatewayItem->text().trimmed().isEmpty()
             && gatewayItem->text() != localizedMissingText(m_settings)
-            && ipItem->text() == gatewayItem->text();
+            && scanIpFromItem(ipItem) == gatewayItem->text();
         for (int col = 0; col < m_scanTable->columnCount(); ++col) {
             auto* item = m_scanTable->item(row, col);
             if (item == nullptr) {

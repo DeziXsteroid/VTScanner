@@ -492,15 +492,15 @@ QWidget* MainWindow::createTcpPage() {
     const QString language = m_settings->language();
     auto* page = new QWidget(this);
     auto* root = new QVBoxLayout(page);
-    root->setContentsMargins(6, 6, 6, 6);
-    root->setSpacing(6);
+    root->setContentsMargins(4, 4, 4, 4);
+    root->setSpacing(4);
 
     auto* top = new QFrame(page);
     top->setObjectName(QStringLiteral("toolbarPanel"));
     auto* topLayout = new QGridLayout(top);
-    topLayout->setContentsMargins(8, 8, 8, 8);
-    topLayout->setHorizontalSpacing(6);
-    topLayout->setVerticalSpacing(6);
+    topLayout->setContentsMargins(6, 4, 6, 4);
+    topLayout->setHorizontalSpacing(5);
+    topLayout->setVerticalSpacing(3);
 
     m_tcpWidgets.hostEdit = new QLineEdit(top);
     m_tcpWidgets.hostEdit->setPlaceholderText(uiText(language, "IP / хост", "IP / host"));
@@ -522,6 +522,7 @@ QWidget* MainWindow::createTcpPage() {
     m_tcpWidgets.noDelayCheck = new QCheckBox(QStringLiteral("NoDelay"), top);
     m_tcpWidgets.noDelayCheck->setChecked(true);
     m_tcpWidgets.keepAliveCheck = new QCheckBox(QStringLiteral("KeepAlive"), top);
+    m_tcpWidgets.autoPortCheck = new QCheckBox(uiText(language, "Auto port", "Auto port"), top);
     m_tcpWidgets.connectButton = new QPushButton(uiText(language, "Подключить", "Connect"), top);
 
     topLayout->addWidget(new QLabel(uiText(language, "Хост", "Host"), top), 0, 0);
@@ -532,12 +533,13 @@ QWidget* MainWindow::createTcpPage() {
     topLayout->addWidget(m_tcpWidgets.localPortSpin, 0, 5);
     topLayout->addWidget(m_tcpWidgets.noDelayCheck, 1, 0);
     topLayout->addWidget(m_tcpWidgets.keepAliveCheck, 1, 1);
-    topLayout->addWidget(new QLabel(uiText(language, "Окончание", "Line ending"), top), 1, 2);
-    topLayout->addWidget(m_tcpWidgets.eolCombo, 1, 3);
-    topLayout->addWidget(m_tcpWidgets.hexCheck, 1, 4);
-    topLayout->addWidget(m_tcpWidgets.connectButton, 1, 5);
+    topLayout->addWidget(m_tcpWidgets.autoPortCheck, 1, 2);
+    topLayout->addWidget(new QLabel(uiText(language, "Окончание", "Line ending"), top), 1, 3);
+    topLayout->addWidget(m_tcpWidgets.eolCombo, 1, 4);
+    topLayout->addWidget(m_tcpWidgets.hexCheck, 1, 5);
+    topLayout->addWidget(m_tcpWidgets.connectButton, 1, 6);
     topLayout->setColumnStretch(1, 1);
-    topLayout->setColumnStretch(5, 0);
+    topLayout->setColumnStretch(6, 0);
     root->addWidget(top);
 
     m_tcpWidgets.outputBox = new QTextEdit(page);
@@ -576,6 +578,12 @@ QWidget* MainWindow::createTcpPage() {
     connect(m_tcpWidgets.inputEdit, &QLineEdit::returnPressed, this, &MainWindow::sendTcpPayload);
     connect(m_tcpWidgets.inputEdit, &QLineEdit::textChanged, this, [this]() { saveQuickCommands(QStringLiteral("tcp"), m_tcpWidgets); });
     connect(m_tcpWidgets.eolCombo, &QComboBox::currentTextChanged, this, [this]() { saveQuickCommands(QStringLiteral("tcp"), m_tcpWidgets); });
+    connect(m_tcpWidgets.autoPortCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        auto section = m_settings->section(QStringLiteral("tcp"));
+        section.insert(QStringLiteral("auto_port"), checked);
+        m_settings->setSection(QStringLiteral("tcp"), section);
+        m_settings->save();
+    });
     {
         const auto section = m_settings->section(QStringLiteral("tcp"));
         m_tcpWidgets.hostEdit->setText(section.value(QStringLiteral("host")).toString());
@@ -583,6 +591,7 @@ QWidget* MainWindow::createTcpPage() {
         m_tcpWidgets.localPortSpin->setValue(section.value(QStringLiteral("local_port")).toInt(0));
         m_tcpWidgets.noDelayCheck->setChecked(section.value(QStringLiteral("no_delay")).toBool(true));
         m_tcpWidgets.keepAliveCheck->setChecked(section.value(QStringLiteral("keep_alive")).toBool(false));
+        m_tcpWidgets.autoPortCheck->setChecked(section.value(QStringLiteral("auto_port")).toBool(false));
         setComboByData(m_tcpWidgets.eolCombo, normalizedEolKey(section.value(QStringLiteral("eol")).toString(QStringLiteral("none"))));
     }
     loadQuickCommands(QStringLiteral("tcp"), m_tcpWidgets);
@@ -593,15 +602,15 @@ QWidget* MainWindow::createUdpPage() {
     const QString language = m_settings->language();
     auto* page = new QWidget(this);
     auto* root = new QVBoxLayout(page);
-    root->setContentsMargins(6, 6, 6, 6);
-    root->setSpacing(6);
+    root->setContentsMargins(4, 4, 4, 4);
+    root->setSpacing(4);
 
     auto* top = new QFrame(page);
     top->setObjectName(QStringLiteral("toolbarPanel"));
     auto* topLayout = new QGridLayout(top);
-    topLayout->setContentsMargins(8, 8, 8, 8);
-    topLayout->setHorizontalSpacing(6);
-    topLayout->setVerticalSpacing(6);
+    topLayout->setContentsMargins(6, 4, 6, 4);
+    topLayout->setHorizontalSpacing(5);
+    topLayout->setVerticalSpacing(3);
 
     m_udpWidgets.hostEdit = new QLineEdit(top);
     m_udpWidgets.hostEdit->setPlaceholderText(uiText(language, "IP / хост", "IP / host"));
@@ -622,6 +631,7 @@ QWidget* MainWindow::createUdpPage() {
     m_udpWidgets.eolCombo->addItem(QStringLiteral("CRLF"), QStringLiteral("crlf"));
     m_udpWidgets.reuseAddressCheck = new QCheckBox(QStringLiteral("Reuse"), top);
     m_udpWidgets.reuseAddressCheck->setChecked(true);
+    m_udpWidgets.autoPortCheck = new QCheckBox(uiText(language, "Auto port", "Auto port"), top);
     m_udpWidgets.connectButton = new QPushButton(uiText(language, "Открыть", "Open"), top);
 
     topLayout->addWidget(new QLabel(uiText(language, "Удаленный хост", "Remote host"), top), 0, 0);
@@ -631,9 +641,10 @@ QWidget* MainWindow::createUdpPage() {
     topLayout->addWidget(new QLabel(uiText(language, "Локальный порт", "Local port"), top), 0, 4);
     topLayout->addWidget(m_udpWidgets.localPortSpin, 0, 5);
     topLayout->addWidget(m_udpWidgets.reuseAddressCheck, 1, 0);
-    topLayout->addWidget(new QLabel(uiText(language, "Окончание", "Line ending"), top), 1, 1);
-    topLayout->addWidget(m_udpWidgets.eolCombo, 1, 2);
-    topLayout->addWidget(m_udpWidgets.hexCheck, 1, 3);
+    topLayout->addWidget(m_udpWidgets.autoPortCheck, 1, 1);
+    topLayout->addWidget(new QLabel(uiText(language, "Окончание", "Line ending"), top), 1, 2);
+    topLayout->addWidget(m_udpWidgets.eolCombo, 1, 3);
+    topLayout->addWidget(m_udpWidgets.hexCheck, 1, 4);
     topLayout->addWidget(m_udpWidgets.connectButton, 1, 5);
     topLayout->setColumnStretch(1, 1);
     topLayout->setColumnStretch(5, 0);
@@ -675,12 +686,19 @@ QWidget* MainWindow::createUdpPage() {
     connect(m_udpWidgets.inputEdit, &QLineEdit::returnPressed, this, &MainWindow::sendUdpPayload);
     connect(m_udpWidgets.inputEdit, &QLineEdit::textChanged, this, [this]() { saveQuickCommands(QStringLiteral("udp"), m_udpWidgets); });
     connect(m_udpWidgets.eolCombo, &QComboBox::currentTextChanged, this, [this]() { saveQuickCommands(QStringLiteral("udp"), m_udpWidgets); });
+    connect(m_udpWidgets.autoPortCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        auto section = m_settings->section(QStringLiteral("udp"));
+        section.insert(QStringLiteral("auto_port"), checked);
+        m_settings->setSection(QStringLiteral("udp"), section);
+        m_settings->save();
+    });
     {
         const auto section = m_settings->section(QStringLiteral("udp"));
         m_udpWidgets.hostEdit->setText(section.value(QStringLiteral("host")).toString());
         m_udpWidgets.remotePortSpin->setValue(section.value(QStringLiteral("remote_port")).toInt(52381));
         m_udpWidgets.localPortSpin->setValue(section.value(QStringLiteral("local_port")).toInt(0));
         m_udpWidgets.reuseAddressCheck->setChecked(section.value(QStringLiteral("reuse_address")).toBool(true));
+        m_udpWidgets.autoPortCheck->setChecked(section.value(QStringLiteral("auto_port")).toBool(false));
         setComboByData(m_udpWidgets.eolCombo, normalizedEolKey(section.value(QStringLiteral("eol")).toString(QStringLiteral("none"))));
     }
     loadQuickCommands(QStringLiteral("udp"), m_udpWidgets);

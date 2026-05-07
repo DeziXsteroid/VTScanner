@@ -199,6 +199,7 @@ void MainWindow::loadSnmpOidList() {
     }
 
     auto* process = new QProcess(this);
+    configureSnmpProcessEnvironment(process, snmpwalkPath);
     QPointer<QProcess> processGuard(process);
     QTimer::singleShot(90000, process, [processGuard]() {
         if (processGuard != nullptr && processGuard->state() != QProcess::NotRunning) {
@@ -363,6 +364,7 @@ void MainWindow::applySnmpSelectedValue() {
     }
 
     auto* process = new QProcess(this);
+    configureSnmpProcessEnvironment(process, snmpsetPath);
     QPointer<QProcess> processGuard(process);
     QTimer::singleShot(15000, process, [processGuard]() {
         if (processGuard != nullptr && processGuard->state() != QProcess::NotRunning) {

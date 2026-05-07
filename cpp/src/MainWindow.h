@@ -109,6 +109,7 @@ private:
         QSpinBox* localPortSpin {nullptr};
         QCheckBox* noDelayCheck {nullptr};
         QCheckBox* keepAliveCheck {nullptr};
+        QCheckBox* autoPortCheck {nullptr};
     };
 
     struct UdpWidgets : StreamWidgets {
@@ -116,6 +117,7 @@ private:
         QSpinBox* remotePortSpin {nullptr};
         QSpinBox* localPortSpin {nullptr};
         QCheckBox* reuseAddressCheck {nullptr};
+        QCheckBox* autoPortCheck {nullptr};
     };
 
     void buildUi();
@@ -275,9 +277,7 @@ private:
     bool m_scanLaunchPending {false};
     bool m_scanPolishingActive {false};
     bool m_scanBackgroundRefreshRun {false};
-    bool m_adapterReloadRetryScheduled {false};
     QString m_scanLogPath;
-    QList<nt::AdapterInfo> m_cachedAdapters;
     quint64 m_currentScanGeneration {0};
 
     QComboBox* m_requestMethodCombo {nullptr};

@@ -15,7 +15,6 @@
 #include "widgets/CodeEditor.h"
 
 #include <algorithm>
-#include <cmath>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -27,11 +26,13 @@
 #include <QColor>
 #include <QComboBox>
 #include <QClipboard>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEvent>
 #include <QEventLoop>
 #include <QFile>
@@ -62,6 +63,7 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QPushButton>
 #include <QRadialGradient>
 #include <QRegularExpression>
@@ -84,12 +86,15 @@
 #include <QTextCursor>
 #include <QTextEdit>
 #include <QToolTip>
+#include <QTcpSocket>
+#include <QUdpSocket>
 #include <QUrl>
 #include <QVariantAnimation>
 #include <QVariant>
 #include <QVBoxLayout>
 #include <QtConcurrent>
-#include <QtMath>
+
+#include <cmath>
 
 namespace {
 
@@ -213,7 +218,7 @@ QString scanProfileTitle(const nt::SettingsService* settings, const QString& pro
 QString scanProfileDescription(const nt::SettingsService* settings, const QString& profile) {
     const QString normalized = normalizedScanProfileForUi(profile);
     if (normalized == QStringLiteral("fast")) {
-        return uiText(settings, "Быстрый режим: хорошая сеть, короткие таймауты, быстрый polish.", "Fast mode: good network, short timeouts, quick polish.");
+        return uiText(settings, "Быстрый режим: хорошая сеть, короткие таймауты, быстрый сбор.", "Fast mode: good network, short timeouts, quick collection.");
     }
     if (normalized == QStringLiteral("reliable")) {
         return uiText(settings, "Слабая сеть: больше ожидания и повторов для полной информации.", "Weak network: longer waits and retries for complete information.");
@@ -429,12 +434,106 @@ QString firstServiceUrl(const QString& value) {
 
 QString scanTypeCellText(const nt::SettingsService* settings, const QString& typeHint, bool isNewHost) {
     const QString baseText = normalizedTypeText(settings, typeHint);
-    if (!isNewHost) {
-        return baseText;
+    Q_UNUSED(isNewHost);
+    return baseText;
+}
+
+QString scanIpCellText(const QString& ip, bool isNewHost) {
+    return isNewHost ? QStringLiteral("%1  %2").arg(ip, comparisonBadgeText()) : ip;
+}
+
+QString scanIpFromItem(const QTableWidgetItem* item) {
+    if (item == nullptr) {
+        return {};
     }
-    return baseText == localizedMissingText(settings)
-        ? comparisonBadgeText()
-        : QStringLiteral("%1 %2").arg(comparisonBadgeText(), baseText);
+    const QString rawIp = item->data(Qt::UserRole).toString().trimmed();
+    return rawIp.isEmpty() ? item->text().section(QLatin1Char(' '), 0, 0).trimmed() : rawIp;
+}
+
+QList<quint16> commonTcpAutoPorts() {
+    return {
+        22, 23, 80, 81, 135, 139, 443, 445, 548, 554, 631,
+        1883, 3306, 3389, 5900, 8000, 8008, 8080, 8443, 9100, 62078
+    };
+}
+
+QList<quint16> commonUdpAutoPorts() {
+    return {
+        53, 67, 68, 69, 123, 137, 138, 161, 500, 1900,
+        3702, 4500, 5353, 5355, 5683, 52381
+    };
+}
+
+quint16 detectOpenTcpPort(const QString& host, quint16 fallbackPort, int timeoutMs = 170) {
+    const QList<quint16> ports = commonTcpAutoPorts();
+    QList<quint16> ordered;
+    if (fallbackPort > 0) {
+        ordered.append(fallbackPort);
+    }
+    for (const auto port : ports) {
+        if (!ordered.contains(port)) {
+            ordered.append(port);
+        }
+    }
+
+    for (const auto port : ordered) {
+        QTcpSocket socket;
+        socket.connectToHost(host, port);
+        if (socket.waitForConnected(timeoutMs)) {
+            socket.disconnectFromHost();
+            return port;
+        }
+        socket.abort();
+        qApp->processEvents(QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers);
+    }
+    return 0;
+}
+
+quint16 detectResponsiveUdpPort(const QString& host, quint16 fallbackPort, const QByteArray& probePayload, int timeoutMs = 180) {
+    const auto addresses = QHostInfo::fromName(host).addresses();
+    if (addresses.isEmpty()) {
+        return 0;
+    }
+
+    const QList<quint16> ports = commonUdpAutoPorts();
+    QList<quint16> ordered;
+    if (fallbackPort > 0) {
+        ordered.append(fallbackPort);
+    }
+    for (const auto port : ports) {
+        if (!ordered.contains(port)) {
+            ordered.append(port);
+        }
+    }
+
+    const QHostAddress target = addresses.first();
+    const QByteArray payload = probePayload.isEmpty() ? QByteArray(1, '\0') : probePayload.left(256);
+    for (const auto port : ordered) {
+        QUdpSocket socket;
+        if (!socket.bind(QHostAddress::AnyIPv4, 0, QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint)) {
+            continue;
+        }
+        socket.writeDatagram(payload, target, port);
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < timeoutMs) {
+            if (!socket.waitForReadyRead(qMax(25, timeoutMs - static_cast<int>(timer.elapsed())))) {
+                continue;
+            }
+            while (socket.hasPendingDatagrams()) {
+                QHostAddress sender;
+                quint16 senderPort = 0;
+                QByteArray data;
+                data.resize(static_cast<int>(socket.pendingDatagramSize()));
+                socket.readDatagram(data.data(), data.size(), &sender, &senderPort);
+                if (senderPort == port) {
+                    return port;
+                }
+            }
+        }
+        qApp->processEvents(QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers);
+    }
+    return 0;
 }
 
 QString scanPopupTitle(const nt::SettingsService* settings, int column) {
@@ -561,7 +660,7 @@ QIcon scanGaugeIcon(const QColor& color, const QString& profile) {
         ? 37.0
         : (normalized == QStringLiteral("reliable") ? 143.0 : 90.0);
     const QPointF center(10.0, 14.0);
-    const qreal radians = qDegreesToRadians(angleDeg);
+    const qreal radians = angleDeg * 3.14159265358979323846 / 180.0;
     const QPointF needle(center.x() + std::cos(radians) * 6.2,
                          center.y() - std::sin(radians) * 6.2);
     painter.setPen(QPen(color, 1.55, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
@@ -677,6 +776,13 @@ QString executableToolPath(const QString& name) {
                << QStringLiteral("/usr/sbin/%1").arg(name)
                << QStringLiteral("/bin/%1").arg(name)
                << QStringLiteral("/sbin/%1").arg(name);
+#elif defined(Q_OS_WIN)
+    const QString windowsDir = qEnvironmentVariable("WINDIR", QStringLiteral("C:\\Windows"));
+    candidates << QDir::toNativeSeparators(windowsDir + QStringLiteral("\\System32\\") + name + QStringLiteral(".exe"))
+               << QDir::toNativeSeparators(windowsDir + QStringLiteral("\\System32\\OpenSSH\\") + name + QStringLiteral(".exe"))
+               << QDir::toNativeSeparators(QStringLiteral("C:\\Net-SNMP\\bin\\") + name + QStringLiteral(".exe"))
+               << QDir::toNativeSeparators(QStringLiteral("C:\\Program Files\\Net-SNMP\\bin\\") + name + QStringLiteral(".exe"))
+               << QDir::toNativeSeparators(QStringLiteral("C:\\Program Files (x86)\\Net-SNMP\\bin\\") + name + QStringLiteral(".exe"));
 #endif
 
     for (const auto& candidate : candidates) {
@@ -685,6 +791,52 @@ QString executableToolPath(const QString& name) {
         }
     }
     return {};
+}
+
+QStringList snmpMibDirectoriesForTool(const QString& toolPath) {
+    QStringList dirs;
+    const auto addIfExists = [&dirs](const QString& path) {
+        const QFileInfo info(QDir::cleanPath(path));
+        if (!info.exists() || !info.isDir()) {
+            return;
+        }
+        const QString absolute = QDir::toNativeSeparators(info.absoluteFilePath());
+        if (!dirs.contains(absolute, Qt::CaseInsensitive)) {
+            dirs << absolute;
+        }
+    };
+
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    const QDir binDir(QFileInfo(toolPath).absolutePath());
+    addIfExists(appDir.filePath(QStringLiteral("share/snmp/mibs")));
+    addIfExists(appDir.filePath(QStringLiteral("../Resources/share/snmp/mibs")));
+    addIfExists(binDir.filePath(QStringLiteral("../share/snmp/mibs")));
+#ifdef Q_OS_WIN
+    addIfExists(QStringLiteral("C:/Net-SNMP/share/snmp/mibs"));
+    addIfExists(QStringLiteral("C:/Program Files/Net-SNMP/share/snmp/mibs"));
+    addIfExists(QStringLiteral("C:/Program Files (x86)/Net-SNMP/share/snmp/mibs"));
+#endif
+    return dirs;
+}
+
+void configureSnmpProcessEnvironment(QProcess* process, const QString& toolPath) {
+    if (process == nullptr) {
+        return;
+    }
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QStringList mibDirs = snmpMibDirectoriesForTool(toolPath);
+    if (!mibDirs.isEmpty()) {
+#ifdef Q_OS_WIN
+        env.insert(QStringLiteral("MIBDIRS"), mibDirs.join(QLatin1Char(';')));
+#else
+        env.insert(QStringLiteral("MIBDIRS"), mibDirs.join(QLatin1Char(':')));
+#endif
+        if (!env.contains(QStringLiteral("MIBS")) || env.value(QStringLiteral("MIBS")).trimmed().isEmpty()) {
+            env.insert(QStringLiteral("MIBS"), QStringLiteral("+ALL"));
+        }
+    }
+    process->setProcessEnvironment(env);
 }
 
 QString missingToolText(const nt::SettingsService* settings, const QString& name) {
@@ -803,6 +955,7 @@ QString snmpObjectDescription(const QString& oid) {
     }
 
     QProcess process;
+    configureSnmpProcessEnvironment(&process, program);
     process.start(program, {QStringLiteral("-Td"), objectName});
     if (!process.waitForFinished(1200)) {
         process.kill();
@@ -840,8 +993,9 @@ bool openPingInTerminal(const QString& ip) {
         }
     );
 #elif defined(Q_OS_WIN)
+    const QString cmdPath = QDir::toNativeSeparators(qEnvironmentVariable("WINDIR", QStringLiteral("C:\\Windows")) + QStringLiteral("\\System32\\cmd.exe"));
     return QProcess::startDetached(
-        QStringLiteral("cmd.exe"),
+        QFileInfo::exists(cmdPath) ? cmdPath : QStringLiteral("cmd.exe"),
         {QStringLiteral("/k"), QStringLiteral("ping %1").arg(ip)}
     );
 #else
@@ -1060,7 +1214,7 @@ int insertionRowForIp(QTableWidget* table, const QString& ip, bool ascending) {
         if (item == nullptr) {
             return row;
         }
-        const quint32 current = ipToInt(item->text());
+        const quint32 current = ipToInt(scanIpFromItem(item));
         if ((ascending && current > target) || (!ascending && current < target)) {
             return row;
         }
@@ -1134,101 +1288,19 @@ bool isUnknownVendorText(const QString& value) {
         || normalized == QStringLiteral("unknown vendor");
 }
 
-bool isWeakScanTypeText(const QString& value) {
+bool isMissingScanValue(const QString& value) {
+    return isUnknownVendorText(value);
+}
+
+bool isWeakScanType(const QString& value) {
     const QString normalized = value.trimmed().toLower();
-    return normalized.isEmpty()
-        || normalized == QStringLiteral("-")
-        || normalized == QStringLiteral("[n/a]")
-        || normalized == QStringLiteral("?")
+    return isMissingScanValue(normalized)
         || normalized == QStringLiteral("icmp")
         || normalized == QStringLiteral("udp")
         || normalized == QStringLiteral("arp")
         || normalized == QStringLiteral("mdns")
         || normalized == QStringLiteral("ssdp")
-        || normalized == QStringLiteral("upnp")
-        || normalized == QStringLiteral("tcp");
-}
-
-QString scanVendorCellText(const nt::SettingsService* settings, const nt::ScanRecord& record, const QString& fallback = QStringLiteral("unknown vendor")) {
-    if (!isUnknownVendorText(record.hostName)) {
-        return normalizedHostNameText(settings, record.hostName);
-    }
-    if (!isUnknownVendorText(record.vendor)) {
-        return displayCellValue(settings, record.vendor, fallback);
-    }
-    const QString type = record.typeHint.trimmed().toLower();
-    if (type == QStringLiteral("apple")) {
-        return QStringLiteral("Apple device");
-    }
-    if (type == QStringLiteral("windows") || type == QStringLiteral("rdp")) {
-        return QStringLiteral("Windows host");
-    }
-    if (type == QStringLiteral("printer")) {
-        return QStringLiteral("Printer");
-    }
-    if (type == QStringLiteral("rtsp") || type == QStringLiteral("media")) {
-        return QStringLiteral("Media device");
-    }
-    if (type == QStringLiteral("gateway")) {
-        return QStringLiteral("Gateway");
-    }
-    if (type == QStringLiteral("iot")) {
-        return QStringLiteral("IoT device");
-    }
-    if (type == QStringLiteral("web")) {
-        return QStringLiteral("Web service");
-    }
-    return displayCellValue(settings, record.vendor, fallback);
-}
-
-bool isMissingScanValue(const QString& value) {
-    return isUnknownVendorText(value);
-}
-
-QString scanLogValue(QString value) {
-    value = value.trimmed();
-    if (value.isEmpty()
-        || value == QStringLiteral("-")
-        || value == QStringLiteral("[n/a]")
-        || value.compare(QStringLiteral("none"), Qt::CaseInsensitive) == 0
-        || value.compare(QStringLiteral("отсутствует"), Qt::CaseInsensitive) == 0
-        || value.compare(QStringLiteral("not open"), Qt::CaseInsensitive) == 0
-        || value.compare(QStringLiteral("unknown vendor"), Qt::CaseInsensitive) == 0) {
-        return {};
-    }
-    return value;
-}
-
-QString scanRecordLogDetails(const nt::ScanRecord& record) {
-    QStringList fields;
-    const auto append = [&fields](const QString& key, const QString& value) {
-        const QString normalized = scanLogValue(value);
-        if (!normalized.isEmpty()) {
-            fields.append(QStringLiteral("%1=%2").arg(key, normalized));
-        }
-    };
-    append(QStringLiteral("ping"), record.pingDisplay);
-    append(QStringLiteral("mac"), record.mac);
-    append(QStringLiteral("name"), record.hostName);
-    if (scanLogValue(record.hostName).isEmpty()) {
-        append(QStringLiteral("vendor"), record.vendor);
-    }
-    append(QStringLiteral("ports"), record.port);
-    append(QStringLiteral("type"), record.typeHint);
-    append(QStringLiteral("web"), record.webDetect);
-    append(QStringLiteral("gateway"), record.gateway);
-    return fields.join(QLatin1Char(' '));
-}
-
-bool scanRecordsHaveUsefulLogChange(const nt::ScanRecord& before, const nt::ScanRecord& after) {
-    return scanLogValue(before.pingDisplay) != scanLogValue(after.pingDisplay)
-        || scanLogValue(before.mac) != scanLogValue(after.mac)
-        || scanLogValue(before.hostName) != scanLogValue(after.hostName)
-        || scanLogValue(before.vendor) != scanLogValue(after.vendor)
-        || scanLogValue(before.port) != scanLogValue(after.port)
-        || scanLogValue(before.typeHint) != scanLogValue(after.typeHint)
-        || scanLogValue(before.webDetect) != scanLogValue(after.webDetect)
-        || scanLogValue(before.gateway) != scanLogValue(after.gateway);
+        || normalized == QStringLiteral("link");
 }
 
 bool isValidGatewayText(const QString& value) {
@@ -1267,8 +1339,7 @@ void mergeScanDisplayFields(nt::ScanRecord& target, const nt::ScanRecord& source
         if (isMissingScanValue(target.speed) && !isMissingScanValue(source.speed)) {
             target.speed = source.speed;
         }
-        if ((isMissingScanValue(target.typeHint) || (isWeakScanTypeText(target.typeHint) && !isWeakScanTypeText(source.typeHint)))
-            && !isMissingScanValue(source.typeHint)) {
+        if (isWeakScanType(target.typeHint) && !isWeakScanType(source.typeHint)) {
             target.typeHint = source.typeHint;
         }
     } else if (target.status != nt::HostStatus::Online && source.status == nt::HostStatus::Online) {
@@ -1284,8 +1355,7 @@ void mergeScanDisplayFields(nt::ScanRecord& target, const nt::ScanRecord& source
     if (isMissingScanValue(target.webDetect) && !isMissingScanValue(source.webDetect)) {
         target.webDetect = source.webDetect;
     }
-    if ((isMissingScanValue(target.typeHint) || (isWeakScanTypeText(target.typeHint) && !isWeakScanTypeText(source.typeHint)))
-        && !isMissingScanValue(source.typeHint)) {
+    if (isWeakScanType(target.typeHint) && !isWeakScanType(source.typeHint)) {
         target.typeHint = source.typeHint;
     }
 
@@ -1319,17 +1389,23 @@ public:
         const QString language = settings != nullptr ? settings->language() : QStringLiteral("ru");
         setWindowTitle(uiText(language, "Настройки", "Settings"));
         setModal(true);
-        resize(560, 300);
+        resize(560, 320);
 
         auto* root = new QVBoxLayout(this);
-        root->setSpacing(6);
+        root->setSpacing(8);
         auto* scanForm = new QFormLayout();
-        scanForm->setVerticalSpacing(4);
 
         m_workersSpin = new QSpinBox(this);
         m_workersSpin->setRange(8, 128);
         m_workersSpin->setValue(settings->scanWorkers());
         scanForm->addRow(uiText(language, "Потоки сканирования", "Scan workers"), m_workersSpin);
+
+        m_scanProfileCombo = new QComboBox(this);
+        m_scanProfileCombo->addItem(uiText(language, "Быстро", "Fast"), QStringLiteral("fast"));
+        m_scanProfileCombo->addItem(uiText(language, "Баланс", "Balanced"), QStringLiteral("balanced"));
+        m_scanProfileCombo->addItem(uiText(language, "Надежно / слабая сеть", "Reliable / weak network"), QStringLiteral("reliable"));
+        m_scanProfileCombo->setCurrentIndex(qMax(0, m_scanProfileCombo->findData(settings->scanProfile())));
+        scanForm->addRow(uiText(language, "Профиль сканирования", "Scan profile"), m_scanProfileCombo);
 
         m_autoScanIntervalSpin = new QSpinBox(this);
         m_autoScanIntervalSpin->setRange(5, 3600);
@@ -1350,17 +1426,27 @@ public:
         ));
         m_scanOnStartupCheck = new QCheckBox(uiText(language, "Автоскан при запуске", "Scan on startup"), this);
         m_scanOnStartupCheck->setChecked(settings->value(QStringLiteral("scan_on_startup"), false).toBool(false));
+        m_routedScanCheck = new QCheckBox(uiText(language, "Scan routed ranges", "Scan routed ranges"), this);
+        m_routedScanCheck->setChecked(settings->value(QStringLiteral("scan_routed_ranges"), false).toBool(false));
+        m_routedScanCheck->setToolTip(uiText(
+            language,
+            "Allow scanning manually entered routed ranges outside the current adapter subnet.",
+            "Allow scanning manually entered routed ranges outside the current adapter subnet."
+        ));
 
         auto refreshAutoWorkersState = [this, language]() {
-            const int workers = autoScanWorkerCountForProfile(m_settings != nullptr ? m_settings->scanProfile() : QStringLiteral("fast"));
+            const int workers = autoScanWorkerCountForProfile(m_scanProfileCombo != nullptr ? m_scanProfileCombo->currentData().toString() : QStringLiteral("balanced"));
             if (m_autoWorkersCheck != nullptr) {
-                m_autoWorkersCheck->setToolTip(uiText(language, "Авто режим выберет %1 потоков для режима скана.", "Auto mode will use %1 workers for the scan mode.").arg(workers));
+                m_autoWorkersCheck->setToolTip(uiText(language, "Авто режим выберет %1 потоков для текущего профиля.", "Auto mode will use %1 workers for the current profile.").arg(workers));
             }
             if (m_workersSpin != nullptr && m_autoWorkersCheck != nullptr) {
                 m_workersSpin->setEnabled(!m_autoWorkersCheck->isChecked());
             }
         };
         connect(m_autoWorkersCheck, &QCheckBox::toggled, this, [refreshAutoWorkersState](bool) {
+            refreshAutoWorkersState();
+        });
+        connect(m_scanProfileCombo, &QComboBox::currentIndexChanged, this, [refreshAutoWorkersState](int) {
             refreshAutoWorkersState();
         });
         refreshAutoWorkersState();
@@ -1380,7 +1466,9 @@ public:
         checks->addWidget(m_autoWorkersCheck);
         checks->addWidget(m_backgroundRefreshCheck);
         checks->addWidget(m_scanOnStartupCheck);
+        checks->addWidget(m_routedScanCheck);
         checks->addStretch(1);
+        checks->addWidget(openLogsButton);
         root->addLayout(checks);
 
         auto* uiForm = new QFormLayout();
@@ -1406,21 +1494,17 @@ public:
         uiForm->addRow(uiText(language, "SSH / Telnet цвет", "SSH / Telnet color"), m_terminalColorCombo);
         root->addLayout(uiForm);
 
-        root->addStretch(1);
-        auto* logsRow = new QHBoxLayout();
-        logsRow->setContentsMargins(0, 0, 0, 0);
-        logsRow->addStretch(1);
-        logsRow->addWidget(openLogsButton);
-        root->addLayout(logsRow);
-
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
         root->addWidget(buttons);
 
         connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
             m_settings->setValue(QStringLiteral("scan_workers"), m_workersSpin->value());
             m_settings->setValue(QStringLiteral("scan_auto_workers"), m_autoWorkersCheck->isChecked());
+            m_settings->setValue(QStringLiteral("scan_profile"), m_scanProfileCombo->currentData().toString());
+            m_settings->setValue(QStringLiteral("scan_profile_user_selected"), true);
             m_settings->setValue(QStringLiteral("scan_background_refresh"), m_backgroundRefreshCheck->isChecked());
             m_settings->setValue(QStringLiteral("scan_on_startup"), m_scanOnStartupCheck->isChecked());
+            m_settings->setValue(QStringLiteral("scan_routed_ranges"), m_routedScanCheck->isChecked());
             m_settings->setValue(QStringLiteral("auto_scan_interval_sec"), m_autoScanIntervalSpin->value());
             m_settings->setValue(QStringLiteral("theme"), m_themeCombo->currentData().toString());
             m_settings->setValue(QStringLiteral("language"), m_languageCombo->currentData().toString());
@@ -1434,9 +1518,11 @@ public:
 private:
     nt::SettingsService* m_settings {nullptr};
     QSpinBox* m_workersSpin {nullptr};
+    QComboBox* m_scanProfileCombo {nullptr};
     QCheckBox* m_autoWorkersCheck {nullptr};
     QCheckBox* m_backgroundRefreshCheck {nullptr};
     QCheckBox* m_scanOnStartupCheck {nullptr};
+    QCheckBox* m_routedScanCheck {nullptr};
     QSpinBox* m_autoScanIntervalSpin {nullptr};
     QComboBox* m_themeCombo {nullptr};
     QComboBox* m_languageCombo {nullptr};

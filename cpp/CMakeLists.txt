@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(NetworkToolsQt VERSION 1.0.8 LANGUAGES CXX)
+project(NetworkToolsQt VERSION 1.0.9 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -106,6 +106,7 @@ if(WIN32)
     set_target_properties(NetworkToolsQt PROPERTIES
         WIN32_EXECUTABLE TRUE
     )
+    target_link_libraries(NetworkToolsQt PRIVATE ws2_32 iphlpapi)
 endif()
 
 if(APPLE)

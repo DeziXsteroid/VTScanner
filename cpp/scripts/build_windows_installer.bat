@@ -11,6 +11,7 @@ set ISCC=
 
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe
 if not defined ISCC if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe
+if not defined ISCC if exist "%LocalAppData%\Programs\Inno Setup 6\ISCC.exe" set ISCC=%LocalAppData%\Programs\Inno Setup 6\ISCC.exe
 if not defined ISCC for /f "delims=" %%I in ('where ISCC.exe 2^>nul') do if not defined ISCC set ISCC=%%I
 
 if not exist "%PACKAGE_SCRIPT%" (
@@ -30,6 +31,9 @@ if not defined ISCC (
 
 call "%PACKAGE_SCRIPT%"
 if errorlevel 1 exit /b 1
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$exe='%ROOT_DIR%\cpp\dist\NetworkToolsQt\NetworkToolsQt.exe'; $cert=Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq 'CN=NetworkToolsQt Dev' } | Select-Object -First 1; if ((Test-Path $exe) -and $cert) { Set-AuthenticodeSignature -FilePath $exe -Certificate $cert -TimestampServer 'http://timestamp.digicert.com' | Out-Null }"
 
 if not exist "%DIST_DIR%" mkdir "%DIST_DIR%"
 "%ISCC%" "%ISS_SCRIPT%"
