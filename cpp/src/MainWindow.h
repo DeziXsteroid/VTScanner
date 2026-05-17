@@ -19,6 +19,7 @@ class QPoint;
 class QPushButton;
 class QEvent;
 class QMenu;
+class QNetworkAccessManager;
 class QSpinBox;
 class QStackedWidget;
 class QTableWidget;
@@ -30,7 +31,9 @@ class QToolButton;
 namespace nt {
 class HttpRequestService;
 class NetworkScanService;
+#ifndef Q_OS_ANDROID
 class SerialSession;
+#endif
 class SettingsService;
 class SnapshotService;
 class SshProcessSession;
@@ -95,6 +98,7 @@ private:
         QList<QLineEdit*> quickEdits;
     };
 
+#ifndef Q_OS_ANDROID
     struct SerialWidgets : StreamWidgets {
         QComboBox* portCombo {nullptr};
         QComboBox* baudCombo {nullptr};
@@ -103,6 +107,7 @@ private:
         QComboBox* stopBitsCombo {nullptr};
         QComboBox* flowControlCombo {nullptr};
     };
+#endif
 
     struct TcpWidgets : StreamWidgets {
         QLineEdit* hostEdit {nullptr};
@@ -129,11 +134,15 @@ private:
     QWidget* createSidebar();
     QWidget* createScanPage();
     QWidget* createRequestPage();
+#ifndef Q_OS_ANDROID
     QWidget* createSerialPage();
+#endif
     QWidget* createTcpPage();
     QWidget* createUdpPage();
     QWidget* createSessionPage(const QString& kind, SessionWidgets& widgets, quint16 defaultPort);
     QWidget* createSnmpPage();
+    QWidget* createSearchPortsPage();
+    QWidget* createNetworkMonitoringPage();
     QWidget* createPlaceholderPage(const QString& title, const QString& text);
     void syncCurrentPage(int row);
 
@@ -182,6 +191,7 @@ private:
     void toggleScanCompareMode(bool enabled);
     void refreshScanComparisonBadges();
     void showScanCellDetails(int row, int column);
+    void maybeShowScanCellHover(const QPoint& viewportPosition);
     void openScanContextMenu(const QPoint& position);
     void openScanRowInBrowser(int row);
     void openScanRowPing(int row);
@@ -199,11 +209,15 @@ private:
 
     void sendHttpRequest();
     void openHttpHistory();
+#ifndef Q_OS_ANDROID
     void refreshSerialPorts();
     void toggleSerial();
+#endif
     void toggleTcp();
     void toggleUdp();
+#ifndef Q_OS_ANDROID
     void sendSerialPayload();
+#endif
     void sendTcpPayload();
     void sendUdpPayload();
     static QByteArray payloadFromText(const QString& text, bool hexEnabled);
@@ -229,13 +243,20 @@ private:
     QTextCharFormat sessionBaseTerminalFormat() const;
     QColor terminalTextColor() const;
     void refreshTerminalFormats();
+    void openSessionSettings(const QString& kind, SessionWidgets& widgets);
+    void runPortSearch();
+    void refreshNetworkMonitoring();
+    void showUpdateDialog(bool automatic);
+    void checkForUpdates(bool automatic);
 
     nt::SettingsService* m_settings {nullptr};
     nt::VendorDbService* m_vendorDb {nullptr};
     nt::SnapshotService* m_snapshots {nullptr};
     nt::NetworkScanService* m_scanner {nullptr};
     nt::HttpRequestService* m_http {nullptr};
+#ifndef Q_OS_ANDROID
     nt::SerialSession* m_serialSession {nullptr};
+#endif
     nt::SshProcessSession* m_sshSession {nullptr};
     nt::TcpClientSession* m_tcpSession {nullptr};
     nt::TelnetSession* m_telnetSession {nullptr};
@@ -270,7 +291,10 @@ private:
     QTimer* m_scanAutoScanTimer {nullptr};
     QTimer* m_scanColumnWidthSaveTimer {nullptr};
     QTimer* m_scanBackgroundRefreshTimer {nullptr};
+#ifndef Q_OS_ANDROID
     QTimer* m_serialPortRefreshTimer {nullptr};
+#endif
+    QTimer* m_networkMonitorTimer {nullptr};
     QMap<QString, QLabel*> m_hostLabels;
     QList<nt::ScanRecord> m_scanRows;
     QSet<QString> m_scanComparisonBaseline;
@@ -282,7 +306,16 @@ private:
     bool m_scanLaunchPending {false};
     bool m_scanPolishingActive {false};
     bool m_scanBackgroundRefreshRun {false};
+    bool m_scanFollowupRunning {false};
+    bool m_scanStopRequested {false};
+    bool m_scanRestartAfterStop {false};
     QString m_scanLogPath;
+    QString m_lastScanStartIp;
+    QString m_lastScanEndIp;
+    QString m_lastScanAdapterId;
+    QString m_lastScanProfile;
+    int m_lastScanWorkers {0};
+    int m_scanFollowupRemaining {0};
     quint64 m_currentScanGeneration {0};
 
     QComboBox* m_requestMethodCombo {nullptr};
@@ -295,12 +328,26 @@ private:
     QPlainTextEdit* m_requestBodyEdit {nullptr};
     QTextEdit* m_requestResponseEdit {nullptr};
 
+#ifndef Q_OS_ANDROID
     SerialWidgets m_serialWidgets;
+#endif
     TcpWidgets m_tcpWidgets;
     UdpWidgets m_udpWidgets;
     SessionWidgets m_sshWidgets;
     SessionWidgets m_telnetWidgets;
     SnmpWidgets m_snmpWidgets;
+    QLineEdit* m_portSearchHostEdit {nullptr};
+    QLineEdit* m_portSearchRangeStartEdit {nullptr};
+    QLineEdit* m_portSearchRangeEndEdit {nullptr};
+    QPushButton* m_portSearchButton {nullptr};
+    QPushButton* m_portSearchRangeButton {nullptr};
+    QTableWidget* m_portSearchTable {nullptr};
+    QLabel* m_portSearchStatusLabel {nullptr};
+    QTableWidget* m_networkMonitorTable {nullptr};
+    QTextEdit* m_networkMonitorDetails {nullptr};
+    QLabel* m_networkMonitorStatusLabel {nullptr};
+    QPushButton* m_networkMonitorToggleButton {nullptr};
+    QNetworkAccessManager* m_updateManager {nullptr};
     QString m_sshDraft;
     QString m_telnetDraft;
     int m_sshDraftCursor {0};

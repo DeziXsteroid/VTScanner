@@ -7,7 +7,9 @@
 #include "core/VendorDbService.h"
 #include "network/HttpRequestService.h"
 #include "network/NetworkScanService.h"
+#ifndef Q_OS_ANDROID
 #include "network/SerialSession.h"
+#endif
 #include "network/SshProcessSession.h"
 #include "network/TcpClientSession.h"
 #include "network/TelnetSession.h"
@@ -36,6 +38,7 @@
 #include <QEvent>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
@@ -47,6 +50,7 @@
 #include <QHostInfo>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -59,6 +63,10 @@
 #include <QMessageBox>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMouseEvent>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -78,8 +86,11 @@
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QToolButton>
+#ifndef Q_OS_ANDROID
 #include <QSerialPortInfo>
+#endif
 #include <QTabWidget>
+#include <QTextBlockFormat>
 #include <QTextStream>
 #include <QThread>
 #include <QTimer>
@@ -144,6 +155,21 @@ int defaultScanColumnWidth(int column) {
     case ScanColumnPort: return 108;
     case ScanColumnType: return 78;
     default: return 96;
+    }
+}
+
+int compactScanColumnWidth(int column) {
+    switch (column) {
+    case ScanColumnIp: return 122;
+    case ScanColumnPing: return 54;
+    case ScanColumnMac: return 112;
+    case ScanColumnVendor: return 118;
+    case ScanColumnHostName: return 112;
+    case ScanColumnWeb: return 118;
+    case ScanColumnGateway: return 88;
+    case ScanColumnPort: return 72;
+    case ScanColumnType: return 62;
+    default: return 64;
     }
 }
 
@@ -1294,6 +1320,174 @@ QPair<QString, QString> rangeFromIpAndPrefix(const QString& ip, int prefixLength
     return {QHostAddress(network + 1u).toString(), QHostAddress(broadcast - 1u).toString()};
 }
 
+QString subnetLabelForIp(const QString& ip) {
+    const QStringList parts = ip.split(QLatin1Char('.'));
+    if (parts.size() != 4) {
+        return ip;
+    }
+    return QStringLiteral("%1.%2.%3.x").arg(parts.at(0), parts.at(1), parts.at(2));
+}
+
+QIcon sortArrowIcon(bool ascending, const QColor& color) {
+    QPixmap pixmap(18, 18);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(color, 1.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.drawLine(QPointF(9, ascending ? 14.5 : 3.5), QPointF(9, ascending ? 4.5 : 14.5));
+    QPolygonF head;
+    if (ascending) {
+        head << QPointF(9, 2.8) << QPointF(5.2, 7.4) << QPointF(12.8, 7.4);
+    } else {
+        head << QPointF(9, 15.2) << QPointF(5.2, 10.6) << QPointF(12.8, 10.6);
+    }
+    painter.setBrush(color);
+    painter.drawPolygon(head);
+    return QIcon(pixmap);
+}
+
+struct PortProbeResult {
+    quint16 port {0};
+    bool open {false};
+    QString service;
+    QString note;
+    qint64 responseMs {-1};
+    QDateTime checkedAt;
+};
+
+struct PortProbeJob {
+    QString host;
+    quint16 port {0};
+    int timeoutMs {12};
+};
+
+QString serviceNameForPort(quint16 port) {
+    switch (port) {
+    case 21: return QStringLiteral("FTP");
+    case 22: return QStringLiteral("SSH");
+    case 23: return QStringLiteral("Telnet");
+    case 25: return QStringLiteral("SMTP");
+    case 53: return QStringLiteral("DNS");
+    case 80: return QStringLiteral("HTTP");
+    case 110: return QStringLiteral("POP3");
+    case 139: return QStringLiteral("NetBIOS");
+    case 143: return QStringLiteral("IMAP");
+    case 443: return QStringLiteral("HTTPS");
+    case 445: return QStringLiteral("SMB");
+    case 554: return QStringLiteral("RTSP");
+    case 587: return QStringLiteral("SMTP submit");
+    case 631: return QStringLiteral("IPP");
+    case 993: return QStringLiteral("IMAPS");
+    case 995: return QStringLiteral("POP3S");
+    case 1433: return QStringLiteral("MSSQL");
+    case 3306: return QStringLiteral("MySQL");
+    case 3389: return QStringLiteral("RDP");
+    case 5432: return QStringLiteral("PostgreSQL");
+    case 5900: return QStringLiteral("VNC");
+    case 8080: return QStringLiteral("HTTP alt");
+    case 8443: return QStringLiteral("HTTPS alt");
+    default: return QStringLiteral("TCP");
+    }
+}
+
+QList<quint16> portSearchPorts(bool wide) {
+    QList<quint16> ports;
+    ports.reserve(wide ? 1060 : 72);
+    if (wide) {
+        for (quint16 port = 1; port <= 1024; ++port) {
+            ports.append(port);
+        }
+    }
+    const QList<quint16> importantPorts {
+        20, 21, 22, 23, 25, 53, 67, 68, 80, 110, 123, 135, 137, 138, 139,
+        143, 161, 162, 389, 443, 445, 465, 500, 515, 548, 554, 587, 631,
+        993, 995, 1080, 1194, 1433, 1521, 1723, 1883, 1900, 2049, 2375,
+        2376, 2483, 2484, 3000, 3001, 3128, 3306, 3389, 4000, 4443, 5000,
+        5001, 5060, 5357, 5432, 5601, 5672, 5800, 5900, 5985, 5986, 6379,
+        7001, 7474, 8000, 8008, 8080, 8081, 8088, 8090, 8443, 8500, 8888,
+        9000, 9001, 9042, 9090, 9100, 9200, 9300, 9418, 10000, 11211, 15672,
+        27017, 27018, 27019, 50000, 50070
+    };
+    for (const quint16 port : importantPorts) {
+        if (!ports.contains(port)) {
+            ports.append(port);
+        }
+    }
+    return ports;
+}
+
+PortProbeResult probeTcpPort(const QString& host, quint16 port, int timeoutMs) {
+    PortProbeResult result;
+    result.port = port;
+    result.service = serviceNameForPort(port);
+    result.checkedAt = QDateTime::currentDateTime();
+    QElapsedTimer timer;
+    timer.start();
+    QTcpSocket socket;
+    socket.connectToHost(host, port);
+    if (socket.waitForConnected(qBound(5, timeoutMs, 45))) {
+        result.open = true;
+        result.note = QStringLiteral("open");
+        result.responseMs = timer.elapsed();
+        socket.disconnectFromHost();
+    } else {
+        result.note = socket.error() == QAbstractSocket::SocketTimeoutError
+            ? QStringLiteral("timeout")
+            : QStringLiteral("no response");
+        result.responseMs = timer.elapsed();
+    }
+    return result;
+}
+
+QList<PortProbeResult> scanCommonPorts(const QString& host, int timeoutMs) {
+    const QList<quint16> ports = portSearchPorts(timeoutMs >= 20);
+    QList<PortProbeJob> jobs;
+    jobs.reserve(ports.size());
+    for (const quint16 port : ports) {
+        jobs.append(PortProbeJob {host, port, timeoutMs});
+    }
+    const auto probed = QtConcurrent::blockingMapped(jobs, [](const PortProbeJob& job) {
+        return probeTcpPort(job.host, job.port, job.timeoutMs);
+    });
+    QList<PortProbeResult> results;
+    for (const PortProbeResult& result : probed) {
+        if (result.open) {
+            results.append(result);
+        }
+    }
+    return results;
+}
+
+QStringList expandPortSearchTargets(const QString& input, int maxHosts = 256) {
+    const QString normalized = input.trimmed();
+    if (normalized.isEmpty()) {
+        return {};
+    }
+    const QString separator = normalized.contains(QStringLiteral("..")) ? QStringLiteral("..") : QStringLiteral("-");
+    if (!normalized.contains(separator)) {
+        return {normalized};
+    }
+    const QStringList parts = normalized.split(separator, Qt::SkipEmptyParts);
+    if (parts.size() != 2) {
+        return {normalized};
+    }
+    const quint32 start = ipToInt(parts.at(0).trimmed());
+    const quint32 end = ipToInt(parts.at(1).trimmed());
+    if (start == 0u || end == 0u) {
+        return {normalized};
+    }
+    const quint32 first = qMin(start, end);
+    const quint32 last = qMax(start, end);
+    QStringList hosts;
+    for (quint32 value = first; value <= last && hosts.size() < maxHosts; ++value) {
+        hosts.append(QHostAddress(value).toString());
+        if (value == 0xffffffffu) {
+            break;
+        }
+    }
+    return hosts;
+}
+
 QIcon statusOrb(nt::HostStatus status) {
     QColor outer("#c93d27");
     QColor center("#ff947f");
@@ -1442,27 +1636,20 @@ public:
         const QString language = settings != nullptr ? settings->language() : QStringLiteral("ru");
         setWindowTitle(uiText(language, "Настройки", "Settings"));
         setModal(true);
-        resize(560, 280);
+        resize(540, 178);
 
         auto* root = new QVBoxLayout(this);
-        root->setContentsMargins(10, 8, 10, 8);
-        root->setSpacing(4);
+        root->setContentsMargins(7, 4, 7, 4);
+        root->setSpacing(1);
         auto* scanForm = new QFormLayout();
         scanForm->setContentsMargins(0, 0, 0, 0);
-        scanForm->setHorizontalSpacing(8);
-        scanForm->setVerticalSpacing(4);
+        scanForm->setHorizontalSpacing(7);
+        scanForm->setVerticalSpacing(2);
 
         m_workersSpin = new QSpinBox(this);
         m_workersSpin->setRange(8, 128);
         m_workersSpin->setValue(settings->scanWorkers());
         scanForm->addRow(uiText(language, "Потоки сканирования", "Scan workers"), m_workersSpin);
-
-        m_scanProfileCombo = new QComboBox(this);
-        m_scanProfileCombo->addItem(uiText(language, "Быстро", "Fast"), QStringLiteral("fast"));
-        m_scanProfileCombo->addItem(uiText(language, "Баланс", "Balanced"), QStringLiteral("balanced"));
-        m_scanProfileCombo->addItem(uiText(language, "Надежно / слабая сеть", "Reliable / weak network"), QStringLiteral("reliable"));
-        m_scanProfileCombo->setCurrentIndex(qMax(0, m_scanProfileCombo->findData(settings->scanProfile())));
-        scanForm->addRow(uiText(language, "Профиль сканирования", "Scan profile"), m_scanProfileCombo);
 
         m_autoScanIntervalSpin = new QSpinBox(this);
         m_autoScanIntervalSpin->setRange(5, 3600);
@@ -1492,7 +1679,7 @@ public:
         ));
 
         auto refreshAutoWorkersState = [this, language]() {
-            const int workers = autoScanWorkerCountForProfile(m_scanProfileCombo != nullptr ? m_scanProfileCombo->currentData().toString() : QStringLiteral("balanced"));
+            const int workers = autoScanWorkerCountForProfile(m_settings != nullptr ? m_settings->scanProfile() : QStringLiteral("balanced"));
             if (m_autoWorkersCheck != nullptr) {
                 m_autoWorkersCheck->setToolTip(uiText(language, "Авто режим выберет %1 потоков для текущего профиля.", "Auto mode will use %1 workers for the current profile.").arg(workers));
             }
@@ -1503,12 +1690,9 @@ public:
         connect(m_autoWorkersCheck, &QCheckBox::toggled, this, [refreshAutoWorkersState](bool) {
             refreshAutoWorkersState();
         });
-        connect(m_scanProfileCombo, &QComboBox::currentIndexChanged, this, [refreshAutoWorkersState](int) {
-            refreshAutoWorkersState();
-        });
         refreshAutoWorkersState();
 
-        auto* openLogsButton = new QPushButton(QStringLiteral("open logs"), this);
+        auto* openLogsButton = new QPushButton(uiText(language, "Логи", "open logs"), this);
         openLogsButton->setObjectName(QStringLiteral("textLinkButton"));
         openLogsButton->setFlat(true);
         openLogsButton->setCursor(Qt::PointingHandCursor);
@@ -1519,7 +1703,7 @@ public:
 
         auto* checks = new QHBoxLayout();
         checks->setContentsMargins(0, 0, 0, 0);
-        checks->setSpacing(10);
+        checks->setSpacing(6);
         checks->addWidget(m_autoWorkersCheck);
         checks->addWidget(m_backgroundRefreshCheck);
         checks->addWidget(m_scanOnStartupCheck);
@@ -1529,6 +1713,9 @@ public:
         root->addLayout(checks);
 
         auto* uiForm = new QFormLayout();
+        uiForm->setContentsMargins(0, 0, 0, 0);
+        uiForm->setHorizontalSpacing(7);
+        uiForm->setVerticalSpacing(2);
         m_themeCombo = new QComboBox(this);
         m_themeCombo->addItem(uiText(language, "Темная", "Dark"), QStringLiteral("dark"));
         m_themeCombo->addItem(uiText(language, "Светлая", "Light"), QStringLiteral("light"));
@@ -1541,31 +1728,26 @@ public:
         m_languageCombo->setCurrentIndex(qMax(0, m_languageCombo->findData(settings->language())));
         uiForm->addRow(uiText(language, "Язык", "Language"), m_languageCombo);
 
-        m_terminalColorCombo = new QComboBox(this);
-        m_terminalColorCombo->addItem(QStringLiteral("Mint"), QStringLiteral("mint"));
-        m_terminalColorCombo->addItem(QStringLiteral("Green"), QStringLiteral("green"));
-        m_terminalColorCombo->addItem(QStringLiteral("Amber"), QStringLiteral("amber"));
-        m_terminalColorCombo->addItem(QStringLiteral("Cyan"), QStringLiteral("cyan"));
-        m_terminalColorCombo->addItem(QStringLiteral("White"), QStringLiteral("white"));
-        m_terminalColorCombo->setCurrentIndex(qMax(0, m_terminalColorCombo->findData(settings->value(QStringLiteral("terminal_text_color"), QStringLiteral("mint")).toString(QStringLiteral("mint")))));
-        uiForm->addRow(uiText(language, "SSH / Telnet цвет", "SSH / Telnet color"), m_terminalColorCombo);
         root->addLayout(uiForm);
 
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+        if (auto* okButton = buttons->button(QDialogButtonBox::Ok)) {
+            okButton->setText(uiText(language, "Сохранить", "Save"));
+        }
+        if (auto* cancelButton = buttons->button(QDialogButtonBox::Cancel)) {
+            cancelButton->setText(uiText(language, "Отмена", "Cancel"));
+        }
         root->addWidget(buttons);
 
         connect(buttons, &QDialogButtonBox::accepted, this, [this]() {
             m_settings->setValue(QStringLiteral("scan_workers"), m_workersSpin->value());
             m_settings->setValue(QStringLiteral("scan_auto_workers"), m_autoWorkersCheck->isChecked());
-            m_settings->setValue(QStringLiteral("scan_profile"), m_scanProfileCombo->currentData().toString());
-            m_settings->setValue(QStringLiteral("scan_profile_user_selected"), true);
             m_settings->setValue(QStringLiteral("scan_background_refresh"), m_backgroundRefreshCheck->isChecked());
             m_settings->setValue(QStringLiteral("scan_on_startup"), m_scanOnStartupCheck->isChecked());
             m_settings->setValue(QStringLiteral("scan_routed_ranges"), m_routedScanCheck->isChecked());
             m_settings->setValue(QStringLiteral("auto_scan_interval_sec"), m_autoScanIntervalSpin->value());
             m_settings->setValue(QStringLiteral("theme"), m_themeCombo->currentData().toString());
             m_settings->setValue(QStringLiteral("language"), m_languageCombo->currentData().toString());
-            m_settings->setValue(QStringLiteral("terminal_text_color"), m_terminalColorCombo->currentData().toString());
             m_settings->save();
             accept();
         });
@@ -1575,7 +1757,6 @@ public:
 private:
     nt::SettingsService* m_settings {nullptr};
     QSpinBox* m_workersSpin {nullptr};
-    QComboBox* m_scanProfileCombo {nullptr};
     QCheckBox* m_autoWorkersCheck {nullptr};
     QCheckBox* m_backgroundRefreshCheck {nullptr};
     QCheckBox* m_scanOnStartupCheck {nullptr};
@@ -1583,7 +1764,6 @@ private:
     QSpinBox* m_autoScanIntervalSpin {nullptr};
     QComboBox* m_themeCombo {nullptr};
     QComboBox* m_languageCombo {nullptr};
-    QComboBox* m_terminalColorCombo {nullptr};
 };
 
 } // namespace

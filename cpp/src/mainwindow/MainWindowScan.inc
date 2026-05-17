@@ -9,12 +9,15 @@ void MainWindow::buildUi() {
     m_pages = new QStackedWidget(central);
     m_pages->addWidget(createScanPage());
     m_pages->addWidget(createRequestPage());
+#ifndef Q_OS_ANDROID
     m_pages->addWidget(createSerialPage());
+#endif
     m_pages->addWidget(createTcpPage());
     m_pages->addWidget(createUdpPage());
     m_pages->addWidget(createSessionPage(QStringLiteral("SSH"), m_sshWidgets, 22));
     m_pages->addWidget(createSessionPage(QStringLiteral("Telnet"), m_telnetWidgets, 23));
     m_pages->addWidget(createSnmpPage());
+    m_pages->addWidget(createSearchPortsPage());
     root->addWidget(m_pages, 1);
     setCentralWidget(central);
     syncCurrentPage(0);
@@ -49,7 +52,6 @@ void MainWindow::syncCurrentPage(int row) {
 void MainWindow::openSettingsDialog() {
     const QString previousTheme = m_settings->theme();
     const QString previousLanguage = m_settings->language();
-    const QString previousTerminalColor = m_settings->value(QStringLiteral("terminal_text_color"), QStringLiteral("mint")).toString(QStringLiteral("mint"));
     const int previousAutoScanInterval = qMax(5, m_settings->value(QStringLiteral("auto_scan_interval_sec"), 30).toInt(30));
     const bool previousBackgroundRefresh = scanBackgroundRefreshEnabled();
     SettingsDialog dialog(m_settings, this);
@@ -69,9 +71,6 @@ void MainWindow::openSettingsDialog() {
             uiText(m_settings, "Настройки", "Settings"),
             uiText(m_settings, "Язык интерфейса сохранен. Перезапустите приложение.", "Interface language saved. Restart the application.")
         );
-    }
-    if (previousTerminalColor != m_settings->value(QStringLiteral("terminal_text_color"), QStringLiteral("mint")).toString(QStringLiteral("mint"))) {
-        refreshTerminalFormats();
     }
     const int updatedAutoScanInterval = qMax(5, m_settings->value(QStringLiteral("auto_scan_interval_sec"), 30).toInt(30));
     if (previousAutoScanInterval != updatedAutoScanInterval && m_scanAutoScanTimer != nullptr) {
@@ -181,7 +180,8 @@ void MainWindow::updateScanBackgroundRefreshTimer() {
     if (m_scanner == nullptr
         || m_scanner->isRunning()
         || m_scanRows.isEmpty()
-        || m_scanLaunchPending) {
+        || m_scanLaunchPending
+        || m_scanPolishingActive) {
         return;
     }
     const int intervalMs = qMax(5, m_settings->value(QStringLiteral("auto_scan_interval_sec"), 30).toInt(30)) * 1000;
@@ -245,13 +245,21 @@ void MainWindow::startScan() {
     if (m_scanBackgroundRefreshTimer != nullptr) {
         m_scanBackgroundRefreshTimer->stop();
     }
-    syncCurrentPage(0);
     ++m_currentScanGeneration;
     m_scanBackgroundRefreshRun = false;
     m_scanPolishingActive = false;
+    m_scanFollowupRunning = false;
+    m_scanStopRequested = false;
+    m_scanRestartAfterStop = false;
     const QString scanProfile = m_settings->scanProfile();
     const bool autoWorkers = m_settings->value(QStringLiteral("scan_auto_workers"), true).toBool(true);
     const int scanWorkers = autoWorkers ? autoScanWorkerCountForProfile(scanProfile) : m_settings->scanWorkers();
+    m_lastScanStartIp = m_scanStartIp->text().trimmed();
+    m_lastScanEndIp = m_scanEndIp->text().trimmed();
+    m_lastScanAdapterId = m_scanAdapterCombo->currentData().toString();
+    m_lastScanProfile = scanProfile;
+    m_lastScanWorkers = scanWorkers;
+    m_scanFollowupRemaining = 1;
     if (m_scanStartButton != nullptr) {
         m_scanStartButton->setText(uiText(m_settings, "■ Стоп", "■ Stop"));
         m_scanStartButton->setEnabled(true);
@@ -264,6 +272,9 @@ void MainWindow::startScan() {
         && !m_settings->value(QStringLiteral("scan_routed_ranges"), false).toBool(false)) {
         applyRangeFromCurrentAdapter();
     }
+    m_lastScanStartIp = m_scanStartIp->text().trimmed();
+    m_lastScanEndIp = m_scanEndIp->text().trimmed();
+    m_lastScanAdapterId = m_scanAdapterCombo->currentData().toString();
     resetScanLog();
     appendScanLogLine(QStringLiteral("start range=%1-%2 adapter=%3 profile=%4 workers=%5 auto_workers=%6")
         .arg(m_scanStartIp != nullptr ? m_scanStartIp->text().trimmed() : QString())
@@ -297,9 +308,9 @@ void MainWindow::startScan() {
     }
     qApp->processEvents(QEventLoop::ExcludeUserInputEvents | QEventLoop::ExcludeSocketNotifiers);
     m_scanner->start(
-        m_scanStartIp->text().trimmed(),
-        m_scanEndIp->text().trimmed(),
-        m_scanAdapterCombo->currentData().toString(),
+        m_lastScanStartIp,
+        m_lastScanEndIp,
+        m_lastScanAdapterId,
         scanWorkers,
         scanProfile,
         m_currentScanGeneration
@@ -312,6 +323,8 @@ void MainWindow::stopScan() {
     m_scanLaunchPending = false;
     m_scanBackgroundRefreshRun = false;
     m_scanPolishingActive = false;
+    m_scanFollowupRunning = false;
+    m_scanStopRequested = true;
     if (m_scanner != nullptr) {
         m_scanner->cancel();
     }
@@ -589,16 +602,33 @@ void MainWindow::rebuildScanTable() {
         const quint32 rightIp = ipToInt(right.ip);
         return m_scanSortAscending ? leftIp < rightIp : leftIp > rightIp;
     });
+    const bool showRoutedSections = m_settings != nullptr
+        && m_settings->value(QStringLiteral("scan_routed_ranges"), false).toBool(false);
+    QString lastSubnetLabel;
     for (const auto& record : sortedRows) {
         const nt::ScanRecord& safeRecord = record;
         if (safeRecord.ip.isEmpty()) {
             continue;
         }
-        int rowIndex = findRowByIp(m_scanTable, safeRecord.ip);
-        if (rowIndex < 0) {
-            rowIndex = insertionRowForIp(m_scanTable, safeRecord.ip, m_scanSortAscending);
-            m_scanTable->insertRow(rowIndex);
+        if (showRoutedSections) {
+            const QString subnetLabel = subnetLabelForIp(safeRecord.ip);
+            if (subnetLabel != lastSubnetLabel) {
+                lastSubnetLabel = subnetLabel;
+                const int sectionRow = m_scanTable->rowCount();
+                m_scanTable->insertRow(sectionRow);
+                m_scanTable->setSpan(sectionRow, 0, 1, ScanColumnCount);
+                auto* sectionItem = new QTableWidgetItem(QStringLiteral("────────  %1  ────────").arg(subnetLabel));
+                sectionItem->setTextAlignment(Qt::AlignCenter);
+                sectionItem->setForeground(QBrush(isLightTheme() ? QColor("#596676") : QColor("#9ca8b5")));
+                sectionItem->setBackground(QBrush(isLightTheme() ? QColor("#e8edf2") : QColor("#171d24")));
+                QFont sectionFont = sectionItem->font();
+                sectionFont.setBold(true);
+                sectionItem->setFont(sectionFont);
+                m_scanTable->setItem(sectionRow, 0, sectionItem);
+            }
         }
+        const int rowIndex = m_scanTable->rowCount();
+        m_scanTable->insertRow(rowIndex);
 
         const QList<QString> values = {
             safeRecord.ip,
@@ -723,6 +753,7 @@ void MainWindow::applyScanColumnVisibility() {
         }
         m_scanTable->setColumnHidden(column, !visible);
     }
+    applyScanColumnWidths();
 }
 
 void MainWindow::saveScanColumnVisibility() const {
@@ -742,9 +773,40 @@ void MainWindow::applyScanColumnWidths() {
     auto* header = m_scanTable->horizontalHeader();
     QSignalBlocker blocker(header);
     const QJsonObject saved = m_settings->section(QStringLiteral("scan_column_widths"));
+    QList<int> visibleColumns;
+    int totalCompactWidth = 0;
+    int totalFlexibleWeight = 0;
     for (int column = 0; column < ScanColumnCount; ++column) {
         header->setSectionResizeMode(column, QHeaderView::Interactive);
-        const int width = qBound(44, saved.value(scanColumnKey(column)).toInt(defaultScanColumnWidth(column)), 1200);
+        if (!m_scanTable->isColumnHidden(column)) {
+            visibleColumns.append(column);
+            totalCompactWidth += compactScanColumnWidth(column);
+            totalFlexibleWeight += qBound(
+                compactScanColumnWidth(column),
+                saved.value(scanColumnKey(column)).toInt(defaultScanColumnWidth(column)),
+                qMin(defaultScanColumnWidth(column), 190)
+            );
+        }
+    }
+    if (visibleColumns.isEmpty()) {
+        return;
+    }
+    const int availableWidth = qMax(totalCompactWidth, m_scanTable->viewport()->width() - 2);
+    const int extraWidth = qMax(0, availableWidth - totalCompactWidth);
+    int usedWidth = 0;
+    for (int i = 0; i < visibleColumns.size(); ++i) {
+        const int column = visibleColumns.at(i);
+        const int compactWidth = compactScanColumnWidth(column);
+        const int weight = qBound(
+            compactWidth,
+            saved.value(scanColumnKey(column)).toInt(defaultScanColumnWidth(column)),
+            qMin(defaultScanColumnWidth(column), 190)
+        );
+        int width = compactWidth + qRound(static_cast<double>(extraWidth) * weight / qMax(1, totalFlexibleWeight));
+        if (i == visibleColumns.size() - 1) {
+            width = qMax(compactWidth, availableWidth - usedWidth);
+        }
+        usedWidth += width;
         m_scanTable->setColumnWidth(column, width);
     }
 }
@@ -795,7 +857,9 @@ void MainWindow::updateScanSortButton() {
     if (m_scanSortButton == nullptr) {
         return;
     }
-    m_scanSortButton->setText(m_scanSortAscending ? QStringLiteral("\u2191") : QStringLiteral("\u2193"));
+    m_scanSortButton->setText(QString());
+    m_scanSortButton->setIcon(sortArrowIcon(m_scanSortAscending, isLightTheme() ? QColor("#45515e") : QColor("#d5dde7")));
+    m_scanSortButton->setIconSize(QSize(18, 18));
     m_scanSortButton->setToolTip(
         m_scanSortAscending
             ? uiText(m_settings, "Сортировка по IP: по возрастанию", "IP sort: ascending")
@@ -1097,6 +1161,18 @@ void MainWindow::finalizeScanBackgroundRefresh(const QList<nt::ScanRecord>& reco
 
 void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int durationMs) {
     if (!records.isEmpty() && records.first().generation != m_currentScanGeneration) {
+        if (m_scanRestartAfterStop && m_scanner != nullptr && !m_scanner->isRunning()) {
+            m_scanRestartAfterStop = false;
+            startScan();
+        }
+        return;
+    }
+    if (m_scanStopRequested) {
+        m_scanStopRequested = false;
+        if (m_scanRestartAfterStop) {
+            m_scanRestartAfterStop = false;
+            startScan();
+        }
         return;
     }
     m_scanLaunchPending = false;
@@ -1116,6 +1192,14 @@ void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int duration
             mergeScanDisplayFields(record, *previousIt);
         }
     }
+    for (const auto& previous : previousRows) {
+        const auto currentIt = std::find_if(sortedRecords.constBegin(), sortedRecords.constEnd(), [&](const nt::ScanRecord& current) {
+            return current.ip == previous.ip;
+        });
+        if (currentIt == sortedRecords.constEnd()) {
+            sortedRecords.append(previous);
+        }
+    }
     std::sort(sortedRecords.begin(), sortedRecords.end(), [this](const nt::ScanRecord& left, const nt::ScanRecord& right) {
         const quint32 leftIp = ipToInt(left.ip);
         const quint32 rightIp = ipToInt(right.ip);
@@ -1126,6 +1210,38 @@ void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int duration
     if (m_scanTable != nullptr) {
         m_scanTable->viewport()->update();
     }
+    if (m_scanFollowupRemaining > 0
+        && m_scanner != nullptr
+        && !m_lastScanStartIp.isEmpty()
+        && !m_lastScanEndIp.isEmpty()
+        && !m_lastScanAdapterId.isEmpty()) {
+        --m_scanFollowupRemaining;
+        m_scanFollowupRunning = true;
+        updateScanSummary();
+        updateSelectedHostPanel();
+        updateScanFooter(uiText(m_settings, "Повторный проход сканирования: уточняю устройства и MAC.", "Second scan pass: refining devices and MAC addresses."));
+        appendScanLogLine(QStringLiteral("followup_scan_start range=%1-%2 adapter=%3 profile=%4 workers=%5")
+            .arg(m_lastScanStartIp, m_lastScanEndIp, m_lastScanAdapterId, m_lastScanProfile)
+            .arg(m_lastScanWorkers));
+        QTimer::singleShot(500, this, [this, generation = m_currentScanGeneration]() {
+            if (generation != m_currentScanGeneration
+                || m_scanner == nullptr
+                || m_scanner->isRunning()
+                || m_scanStopRequested) {
+                return;
+            }
+            m_scanner->start(
+                m_lastScanStartIp,
+                m_lastScanEndIp,
+                m_lastScanAdapterId,
+                qMax(1, m_lastScanWorkers),
+                m_lastScanProfile,
+                m_currentScanGeneration
+            );
+        });
+        return;
+    }
+    m_scanFollowupRunning = false;
     if (m_scanStartButton != nullptr) {
         m_scanStartButton->setEnabled(true);
         m_scanStartButton->setText(uiText(m_settings, "▶ Старт", "▶ Start"));
@@ -1160,7 +1276,7 @@ void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int duration
     m_scanRefreshMisses.clear();
     updateScanFooter(localizedScanPolishingText(m_settings));
     appendScanLogLine(QStringLiteral("main_scan_finished devices=%1 duration_ms=%2 polishing=true").arg(m_scanRows.size()).arg(durationMs));
-    QTimer::singleShot(2800, this, [this, finishedGeneration, durationMs]() {
+    QTimer::singleShot(10500, this, [this, finishedGeneration, durationMs]() {
         if (finishedGeneration != m_currentScanGeneration
             || m_scanner == nullptr
             || m_scanner->isRunning()
@@ -1347,6 +1463,29 @@ void MainWindow::showScanCellDetails(int row, int column) {
     QToolTip::showText(anchor, html, m_scanTable->viewport(), cellRect, 9000);
 }
 
+void MainWindow::maybeShowScanCellHover(const QPoint& viewportPosition) {
+    if (m_scanTable == nullptr) {
+        return;
+    }
+    const QModelIndex index = m_scanTable->indexAt(viewportPosition);
+    if (!index.isValid()) {
+        return;
+    }
+    const int column = index.column();
+    if (column != ScanColumnPort && column != ScanColumnWeb) {
+        return;
+    }
+    auto* item = m_scanTable->item(index.row(), column);
+    if (item == nullptr) {
+        return;
+    }
+    const QString value = scanPopupValue(item->text(), column);
+    if (value.isEmpty()) {
+        return;
+    }
+    showScanCellDetails(index.row(), column);
+}
+
 void MainWindow::openScanContextMenu(const QPoint& position) {
     if (m_scanTable == nullptr) {
         return;
@@ -1358,6 +1497,13 @@ void MainWindow::openScanContextMenu(const QPoint& position) {
     m_scanTable->selectRow(index.row());
 
     QMenu menu(this);
+    const QString currentCellText = m_scanTable->item(index.row(), index.column()) != nullptr
+        ? scanPopupValue(m_scanTable->item(index.row(), index.column())->text(), index.column())
+        : QString();
+    auto* copyAction = menu.addAction(uiText(m_settings, "Скопировать поле", "Copy cell"));
+    copyAction->setEnabled(!currentCellText.trimmed().isEmpty());
+    auto* copyRowAction = menu.addAction(uiText(m_settings, "Скопировать строку", "Copy row"));
+    menu.addSeparator();
     auto* browserAction = menu.addAction(uiText(m_settings, "Открыть в браузере", "Open in browser"));
     auto* pingAction = menu.addAction(uiText(m_settings, "Ping", "Ping"));
     menu.addSeparator();
@@ -1365,7 +1511,19 @@ void MainWindow::openScanContextMenu(const QPoint& position) {
     auto* telnetAction = menu.addAction(uiText(m_settings, "Connect Telnet", "Connect Telnet"));
 
     QAction* selected = menu.exec(m_scanTable->viewport()->mapToGlobal(position));
-    if (selected == browserAction) {
+    if (selected == copyAction) {
+        QApplication::clipboard()->setText(currentCellText);
+    } else if (selected == copyRowAction) {
+        QStringList values;
+        for (int column = 0; column < ScanColumnCount; ++column) {
+            if (m_scanTable->isColumnHidden(column)) {
+                continue;
+            }
+            const auto* item = m_scanTable->item(index.row(), column);
+            values.append(item != nullptr ? scanPopupValue(item->text(), column) : QString());
+        }
+        QApplication::clipboard()->setText(values.join(QStringLiteral(" | ")));
+    } else if (selected == browserAction) {
         openScanRowInBrowser(index.row());
     } else if (selected == pingAction) {
         openScanRowPing(index.row());
@@ -1421,9 +1579,21 @@ void MainWindow::openScanRowSession(const QString& kind, int row) {
     }
     const QString ip = scanIpFromItem(ipItem).trimmed();
     if (kind == QStringLiteral("ssh")) {
-        prepareSessionFromScan(m_sshWidgets, ip, 22, QStringLiteral("SSH"), 5);
+        prepareSessionFromScan(m_sshWidgets, ip, 22, QStringLiteral("SSH"),
+#ifdef Q_OS_ANDROID
+            4
+#else
+            5
+#endif
+        );
     } else {
-        prepareSessionFromScan(m_telnetWidgets, ip, 23, QStringLiteral("Telnet"), 6);
+        prepareSessionFromScan(m_telnetWidgets, ip, 23, QStringLiteral("Telnet"),
+#ifdef Q_OS_ANDROID
+            5
+#else
+            6
+#endif
+        );
     }
 }
 
@@ -1431,9 +1601,21 @@ void MainWindow::prepareSessionFromScan(SessionWidgets& widgets, const QString& 
     if (host.trimmed().isEmpty()) {
         return;
     }
-    if (pageIndex == 5 && m_sshSession->isConnected()) {
+    if (pageIndex ==
+#ifdef Q_OS_ANDROID
+        4
+#else
+        5
+#endif
+        && m_sshSession->isConnected()) {
         m_sshSession->close();
-    } else if (pageIndex == 6 && m_telnetSession->isConnected()) {
+    } else if (pageIndex ==
+#ifdef Q_OS_ANDROID
+        5
+#else
+        6
+#endif
+        && m_telnetSession->isConnected()) {
         m_telnetSession->close();
     }
     if (m_navList != nullptr) {

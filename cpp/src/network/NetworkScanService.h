@@ -29,6 +29,7 @@ public:
     void start(const QString& startIp, const QString& endIp, const QString& adapterId, int maxWorkers, const QString& scanProfile, quint64 generation);
     void cancel();
     bool isRunning() const;
+    static QString lookupMac(const QString& ip);
 
 signals:
     void scanStarted();
@@ -54,7 +55,6 @@ private:
     static PingResult pingHost(const QString& ip, const QString& sourceIp, int timeoutMs);
     static QStringList probeOpenPorts(const QString& ip, int timeoutMs, const QString& scanProfile);
     static QString detectWebService(const QString& ip, const QStringList& openPorts);
-    static QString lookupMac(const QString& ip);
     static QString resolveName(const QString& ip);
     static QString detectGateway(const AdapterInfo& adapter);
     static QString detectMask(const AdapterInfo& adapter);

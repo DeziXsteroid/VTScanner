@@ -37,12 +37,15 @@ QWidget* MainWindow::createSidebar() {
     m_navList->addItems({
         uiText(language, "Сканер IP", "IP Scanner"),
         QStringLiteral("HTTP / REQ"),
+#ifndef Q_OS_ANDROID
         QStringLiteral("Serial"),
+#endif
         QStringLiteral("TCP"),
         QStringLiteral("UDP"),
         QStringLiteral("SSH"),
         QStringLiteral("Telnet"),
         QStringLiteral("SNMP Browser"),
+        uiText(language, "Поиск портов", "Search Ports"),
     });
     connect(m_navList, &QListWidget::currentRowChanged, this, &MainWindow::syncCurrentPage);
     layout->addWidget(m_navList, 1);
@@ -172,8 +175,27 @@ QWidget* MainWindow::createScanPage() {
     m_scanStopButton->hide();
 
     connect(m_scanStartButton, &QPushButton::clicked, this, [this]() {
-        if (m_scanner != nullptr && (m_scanner->isRunning() || m_scanLaunchPending)) {
+        if (m_scanner != nullptr && (m_scanner->isRunning() || m_scanLaunchPending) && !m_scanStopRequested) {
             stopScan();
+        } else if (m_scanner != nullptr && m_scanner->isRunning() && m_scanStopRequested) {
+            m_scanRestartAfterStop = true;
+            updateScanFooter(uiText(m_settings, "Скан останавливается, новый запуск начнется сразу после остановки.", "Stopping scan; restart will begin immediately."));
+            QTimer::singleShot(160, this, [this]() {
+                if (!m_scanRestartAfterStop) {
+                    return;
+                }
+                if (m_scanner != nullptr && m_scanner->isRunning()) {
+                    QTimer::singleShot(160, this, [this]() {
+                        if (m_scanRestartAfterStop && m_scanner != nullptr && !m_scanner->isRunning()) {
+                            m_scanRestartAfterStop = false;
+                            startScan();
+                        }
+                    });
+                    return;
+                }
+                m_scanRestartAfterStop = false;
+                startScan();
+            });
         } else {
             startScan();
         }
@@ -246,6 +268,9 @@ QWidget* MainWindow::createScanPage() {
     m_scanTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scanTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scanTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    m_scanTable->setMouseTracking(true);
+    m_scanTable->viewport()->setMouseTracking(true);
+    m_scanTable->viewport()->installEventFilter(this);
     m_scanTable->verticalHeader()->setVisible(false);
     m_scanTable->verticalHeader()->setDefaultSectionSize(23);
     m_scanTable->horizontalHeader()->setFixedHeight(23);
@@ -314,6 +339,7 @@ QWidget* MainWindow::createRequestPage() {
     m_requestResponseEdit->setFont(fixedFont());
     m_requestResponseEdit->setObjectName(QStringLiteral("httpResponsePanel"));
     m_requestResponseEdit->setLineWrapMode(QTextEdit::NoWrap);
+    m_requestResponseEdit->installEventFilter(this);
     root->addWidget(m_requestResponseEdit, 3);
 
     auto* controls = new QGroupBox(uiText(language, "Запрос", "Request"), page);
@@ -386,6 +412,7 @@ QWidget* MainWindow::createRequestPage() {
     return page;
 }
 
+#ifndef Q_OS_ANDROID
 QWidget* MainWindow::createSerialPage() {
     const QString language = m_settings->language();
     auto* page = new QWidget(this);
@@ -457,15 +484,19 @@ QWidget* MainWindow::createSerialPage() {
     m_serialWidgets.inputEdit = new QLineEdit(sendBox);
     m_serialWidgets.inputEdit->setPlaceholderText(uiText(language, "Данные", "Payload"));
     auto* sendButton = new QPushButton(uiText(language, "Отправить", "Send"), sendBox);
-    sendLayout->addWidget(new QLabel(uiText(language, "Ввод", "Input"), sendBox), 0, 0);
+    auto* inputLabel = new QLabel(uiText(language, "Ввод", "Input"), sendBox);
+    inputLabel->hide();
+    m_serialWidgets.inputEdit->hide();
+    sendButton->hide();
+    sendLayout->addWidget(inputLabel, 0, 0);
     sendLayout->addWidget(m_serialWidgets.inputEdit, 0, 1);
     sendLayout->addWidget(sendButton, 0, 2);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         auto* quickEdit = new QLineEdit(sendBox);
         quickEdit->setPlaceholderText(uiText(language, "Команда %1", "Command %1").arg(i + 1));
-        auto* quickButton = new QPushButton(QString::number(i + 1), sendBox);
+        auto* quickButton = new QPushButton(uiText(language, "Отправить", "Send"), sendBox);
         m_serialWidgets.quickEdits.append(quickEdit);
-        sendLayout->addWidget(new QLabel(QStringLiteral("Cmd %1").arg(i + 1), sendBox), i + 1, 0);
+        sendLayout->addWidget(new QLabel(uiText(language, "Команда %1", "Cmd %1").arg(i + 1), sendBox), i + 1, 0);
         sendLayout->addWidget(quickEdit, i + 1, 1);
         sendLayout->addWidget(quickButton, i + 1, 2);
         connect(quickEdit, &QLineEdit::textChanged, this, [this]() { saveQuickCommands(QStringLiteral("serial"), m_serialWidgets); });
@@ -495,6 +526,7 @@ QWidget* MainWindow::createSerialPage() {
     loadQuickCommands(QStringLiteral("serial"), m_serialWidgets);
     return page;
 }
+#endif
 
 QWidget* MainWindow::createTcpPage() {
     const QString language = m_settings->language();
@@ -530,7 +562,7 @@ QWidget* MainWindow::createTcpPage() {
     m_tcpWidgets.noDelayCheck = new QCheckBox(QStringLiteral("NoDelay"), top);
     m_tcpWidgets.noDelayCheck->setChecked(true);
     m_tcpWidgets.keepAliveCheck = new QCheckBox(QStringLiteral("KeepAlive"), top);
-    m_tcpWidgets.autoPortCheck = new QCheckBox(uiText(language, "Auto port", "Auto port"), top);
+    m_tcpWidgets.autoPortCheck = new QCheckBox(uiText(language, "Автопорт", "Auto port"), top);
     m_tcpWidgets.connectButton = new QPushButton(uiText(language, "Подключить", "Connect"), top);
 
     topLayout->addWidget(new QLabel(uiText(language, "Хост", "Host"), top), 0, 0);
@@ -565,15 +597,19 @@ QWidget* MainWindow::createTcpPage() {
     m_tcpWidgets.inputEdit = new QLineEdit(sendBox);
     m_tcpWidgets.inputEdit->setPlaceholderText(uiText(language, "Данные", "Payload"));
     auto* sendButton = new QPushButton(uiText(language, "Отправить", "Send"), sendBox);
-    sendLayout->addWidget(new QLabel(uiText(language, "Ввод", "Input"), sendBox), 0, 0);
+    auto* inputLabel = new QLabel(uiText(language, "Ввод", "Input"), sendBox);
+    inputLabel->hide();
+    m_tcpWidgets.inputEdit->hide();
+    sendButton->hide();
+    sendLayout->addWidget(inputLabel, 0, 0);
     sendLayout->addWidget(m_tcpWidgets.inputEdit, 0, 1);
     sendLayout->addWidget(sendButton, 0, 2);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         auto* quickEdit = new QLineEdit(sendBox);
         quickEdit->setPlaceholderText(uiText(language, "Команда %1", "Command %1").arg(i + 1));
-        auto* quickButton = new QPushButton(QString::number(i + 1), sendBox);
+        auto* quickButton = new QPushButton(uiText(language, "Отправить", "Send"), sendBox);
         m_tcpWidgets.quickEdits.append(quickEdit);
-        sendLayout->addWidget(new QLabel(QStringLiteral("Cmd %1").arg(i + 1), sendBox), i + 1, 0);
+        sendLayout->addWidget(new QLabel(uiText(language, "Команда %1", "Cmd %1").arg(i + 1), sendBox), i + 1, 0);
         sendLayout->addWidget(quickEdit, i + 1, 1);
         sendLayout->addWidget(quickButton, i + 1, 2);
         connect(quickEdit, &QLineEdit::textChanged, this, [this]() { saveQuickCommands(QStringLiteral("tcp"), m_tcpWidgets); });
@@ -639,7 +675,7 @@ QWidget* MainWindow::createUdpPage() {
     m_udpWidgets.eolCombo->addItem(QStringLiteral("CRLF"), QStringLiteral("crlf"));
     m_udpWidgets.reuseAddressCheck = new QCheckBox(QStringLiteral("Reuse"), top);
     m_udpWidgets.reuseAddressCheck->setChecked(true);
-    m_udpWidgets.autoPortCheck = new QCheckBox(uiText(language, "Auto port", "Auto port"), top);
+    m_udpWidgets.autoPortCheck = new QCheckBox(uiText(language, "Автопорт", "Auto port"), top);
     m_udpWidgets.connectButton = new QPushButton(uiText(language, "Открыть", "Open"), top);
 
     topLayout->addWidget(new QLabel(uiText(language, "Удаленный хост", "Remote host"), top), 0, 0);
@@ -673,15 +709,19 @@ QWidget* MainWindow::createUdpPage() {
     m_udpWidgets.inputEdit = new QLineEdit(sendBox);
     m_udpWidgets.inputEdit->setPlaceholderText(uiText(language, "Данные", "Payload"));
     auto* sendButton = new QPushButton(uiText(language, "Отправить", "Send"), sendBox);
-    sendLayout->addWidget(new QLabel(uiText(language, "Ввод", "Input"), sendBox), 0, 0);
+    auto* inputLabel = new QLabel(uiText(language, "Ввод", "Input"), sendBox);
+    inputLabel->hide();
+    m_udpWidgets.inputEdit->hide();
+    sendButton->hide();
+    sendLayout->addWidget(inputLabel, 0, 0);
     sendLayout->addWidget(m_udpWidgets.inputEdit, 0, 1);
     sendLayout->addWidget(sendButton, 0, 2);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         auto* quickEdit = new QLineEdit(sendBox);
         quickEdit->setPlaceholderText(uiText(language, "Команда %1", "Command %1").arg(i + 1));
-        auto* quickButton = new QPushButton(QString::number(i + 1), sendBox);
+        auto* quickButton = new QPushButton(uiText(language, "Отправить", "Send"), sendBox);
         m_udpWidgets.quickEdits.append(quickEdit);
-        sendLayout->addWidget(new QLabel(QStringLiteral("Cmd %1").arg(i + 1), sendBox), i + 1, 0);
+        sendLayout->addWidget(new QLabel(uiText(language, "Команда %1", "Cmd %1").arg(i + 1), sendBox), i + 1, 0);
         sendLayout->addWidget(quickEdit, i + 1, 1);
         sendLayout->addWidget(quickButton, i + 1, 2);
         connect(quickEdit, &QLineEdit::textChanged, this, [this]() { saveQuickCommands(QStringLiteral("udp"), m_udpWidgets); });
@@ -725,7 +765,8 @@ QWidget* MainWindow::createSessionPage(const QString& kind, SessionWidgets& widg
 
     auto* left = new QFrame(splitter);
     left->setObjectName(QStringLiteral("sessionPane"));
-    left->setMinimumWidth(240);
+    left->setMinimumWidth(190);
+    left->setMaximumWidth(250);
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(8, 8, 8, 8);
 
@@ -770,6 +811,13 @@ QWidget* MainWindow::createSessionPage(const QString& kind, SessionWidgets& widg
     portLayout->setSpacing(6);
     portLayout->addWidget(new QLabel(uiText(language, "Порт", "Port"), portRow));
     portLayout->addWidget(widgets.portSpin);
+    auto* settingsButton = new QToolButton(portRow);
+    settingsButton->setObjectName(QStringLiteral("scanGearButton"));
+    settingsButton->setAutoRaise(true);
+    settingsButton->setIcon(scanGearIcon(isLightTheme() ? QColor("#5f6a76") : QColor("#c1ccd8")));
+    settingsButton->setIconSize(QSize(18, 18));
+    settingsButton->setToolTip(uiText(language, "Настройки терминала", "Terminal settings"));
+    portLayout->addWidget(settingsButton);
     portLayout->addStretch(1);
 
     auto* actionsRow = new QWidget(workspaceBox);
@@ -808,11 +856,12 @@ QWidget* MainWindow::createSessionPage(const QString& kind, SessionWidgets& widg
     splitter->addWidget(right);
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({260, 980});
+    splitter->setSizes({220, 1020});
 
     connect(newButton, &QPushButton::clicked, this, [this, &widgets, defaultPort]() { newSessionProfile(widgets, defaultPort); });
     connect(deleteButton, &QPushButton::clicked, this, [this, kind, &widgets, defaultPort]() { deleteSessionProfile(kind.toLower(), widgets, defaultPort); });
     connect(widgets.saveButton, &QPushButton::clicked, this, [this, kind, &widgets, defaultPort]() { saveSessionProfile(kind.toLower(), widgets, defaultPort); });
+    connect(settingsButton, &QToolButton::clicked, this, [this, kind, &widgets]() { openSessionSettings(kind.toLower(), widgets); });
     connect(widgets.profiles, &QListWidget::itemSelectionChanged, this, [this, &widgets, defaultPort]() {
         const auto* item = widgets.profiles->currentItem();
         if (item == nullptr) {
@@ -1048,6 +1097,157 @@ QWidget* MainWindow::createSnmpPage() {
     return page;
 }
 
+QWidget* MainWindow::createSearchPortsPage() {
+    const QString language = m_settings->language();
+    auto* page = new QWidget(this);
+    auto* root = new QVBoxLayout(page);
+    root->setContentsMargins(8, 8, 8, 8);
+    root->setSpacing(8);
+
+    auto* toolbar = new QFrame(page);
+    toolbar->setObjectName(QStringLiteral("toolbarPanel"));
+    auto* toolbarLayout = new QGridLayout(toolbar);
+    toolbarLayout->setContentsMargins(8, 6, 8, 6);
+    toolbarLayout->setSpacing(6);
+    toolbarLayout->addWidget(new QLabel(QStringLiteral("IP"), toolbar), 0, 0);
+    m_portSearchHostEdit = new QLineEdit(toolbar);
+    m_portSearchHostEdit->setPlaceholderText(QStringLiteral("192.168.0.1"));
+    m_portSearchHostEdit->setMinimumWidth(190);
+    toolbarLayout->addWidget(m_portSearchHostEdit, 0, 1);
+    m_portSearchButton = new QPushButton(uiText(language, "Сканировать порты", "Scan ports"), toolbar);
+    toolbarLayout->addWidget(m_portSearchButton, 0, 2);
+    auto* orLabel = new QLabel(uiText(language, "или диапазон", "or range"), toolbar);
+    orLabel->setAlignment(Qt::AlignCenter);
+    toolbarLayout->addWidget(orLabel, 0, 3);
+    m_portSearchRangeStartEdit = new QLineEdit(toolbar);
+    m_portSearchRangeStartEdit->setPlaceholderText(QStringLiteral("192.168.0.1"));
+    m_portSearchRangeStartEdit->setMinimumWidth(150);
+    toolbarLayout->addWidget(m_portSearchRangeStartEdit, 0, 4);
+    toolbarLayout->addWidget(new QLabel(QStringLiteral("-"), toolbar), 0, 5);
+    m_portSearchRangeEndEdit = new QLineEdit(toolbar);
+    m_portSearchRangeEndEdit->setPlaceholderText(QStringLiteral("192.168.0.50"));
+    m_portSearchRangeEndEdit->setMinimumWidth(150);
+    toolbarLayout->addWidget(m_portSearchRangeEndEdit, 0, 6);
+    m_portSearchRangeButton = new QPushButton(uiText(language, "Сканировать диапазон", "Scan range"), toolbar);
+    toolbarLayout->addWidget(m_portSearchRangeButton, 0, 7);
+    toolbarLayout->setColumnStretch(1, 1);
+    toolbarLayout->setColumnStretch(4, 1);
+    toolbarLayout->setColumnStretch(6, 1);
+    m_portSearchStatusLabel = new QLabel(toolbar);
+    m_portSearchStatusLabel->setObjectName(QStringLiteral("statusHint"));
+    m_portSearchStatusLabel->hide();
+    root->addWidget(toolbar, 0);
+
+    m_portSearchTable = new QTableWidget(0, 6, page);
+    m_portSearchTable->setHorizontalHeaderLabels({
+        QStringLiteral("IP"),
+        QStringLiteral("MAC"),
+        uiText(language, "Порт", "Port"),
+        uiText(language, "Сервис", "Service"),
+        uiText(language, "Статус", "State"),
+        uiText(language, "Детали", "Notes"),
+    });
+    m_portSearchTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_portSearchTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_portSearchTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_portSearchTable->verticalHeader()->setVisible(false);
+    m_portSearchTable->horizontalHeader()->setStretchLastSection(true);
+    m_portSearchTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    m_portSearchTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
+    m_portSearchTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
+    m_portSearchTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
+    m_portSearchTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_portSearchTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+    m_portSearchTable->setColumnWidth(0, 132);
+    m_portSearchTable->setColumnWidth(1, 132);
+    m_portSearchTable->setColumnWidth(2, 86);
+    m_portSearchTable->setColumnWidth(3, 112);
+    m_portSearchTable->setColumnWidth(5, 340);
+    root->addWidget(m_portSearchTable, 1);
+
+    connect(m_portSearchButton, &QPushButton::clicked, this, &MainWindow::runPortSearch);
+    connect(m_portSearchHostEdit, &QLineEdit::returnPressed, this, &MainWindow::runPortSearch);
+    connect(m_portSearchRangeButton, &QPushButton::clicked, this, [this]() {
+        if (m_portSearchHostEdit == nullptr || m_portSearchRangeStartEdit == nullptr || m_portSearchRangeEndEdit == nullptr) {
+            return;
+        }
+        setProperty("port_search_input", QStringLiteral("%1-%2").arg(m_portSearchRangeStartEdit->text().trimmed(), m_portSearchRangeEndEdit->text().trimmed()));
+        runPortSearch();
+    });
+    connect(m_portSearchRangeStartEdit, &QLineEdit::returnPressed, m_portSearchRangeButton, &QPushButton::click);
+    connect(m_portSearchRangeEndEdit, &QLineEdit::returnPressed, m_portSearchRangeButton, &QPushButton::click);
+    return page;
+}
+
+QWidget* MainWindow::createNetworkMonitoringPage() {
+    const QString language = m_settings->language();
+    auto* page = new QWidget(this);
+    auto* root = new QVBoxLayout(page);
+    root->setContentsMargins(8, 8, 8, 8);
+    root->setSpacing(8);
+
+    auto* toolbar = new QFrame(page);
+    toolbar->setObjectName(QStringLiteral("toolbarPanel"));
+    auto* toolbarLayout = new QHBoxLayout(toolbar);
+    toolbarLayout->setContentsMargins(8, 6, 8, 6);
+    toolbarLayout->setSpacing(6);
+    m_networkMonitorToggleButton = new QPushButton(uiText(language, "Старт", "Start"), toolbar);
+    toolbarLayout->addWidget(m_networkMonitorToggleButton);
+    m_networkMonitorStatusLabel = new QLabel(uiText(language, "Активные TCP/UDP соединения ОС. Payload требует Npcap/libpcap.", "Active OS TCP/UDP connections. Payload capture requires Npcap/libpcap."), toolbar);
+    m_networkMonitorStatusLabel->setObjectName(QStringLiteral("statusHint"));
+    toolbarLayout->addWidget(m_networkMonitorStatusLabel, 1);
+    root->addWidget(toolbar, 0);
+
+    auto* splitter = new QSplitter(Qt::Vertical, page);
+    m_networkMonitorTable = new QTableWidget(0, 6, splitter);
+    m_networkMonitorTable->setHorizontalHeaderLabels({QStringLiteral("Proto"), QStringLiteral("Local"), QStringLiteral("Remote"), QStringLiteral("State"), QStringLiteral("PID"), QStringLiteral("Direction")});
+    m_networkMonitorTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_networkMonitorTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_networkMonitorTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_networkMonitorTable->verticalHeader()->setVisible(false);
+    m_networkMonitorTable->horizontalHeader()->setStretchLastSection(true);
+    m_networkMonitorTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_networkMonitorTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_networkMonitorTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_networkMonitorTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_networkMonitorTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_networkMonitorTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    splitter->addWidget(m_networkMonitorTable);
+    m_networkMonitorDetails = new QTextEdit(splitter);
+    m_networkMonitorDetails->setReadOnly(true);
+    m_networkMonitorDetails->setFont(fixedFont());
+    splitter->addWidget(m_networkMonitorDetails);
+    splitter->setSizes({520, 160});
+    root->addWidget(splitter, 1);
+
+    connect(m_networkMonitorToggleButton, &QPushButton::clicked, this, [this]() {
+        if (m_networkMonitorTimer == nullptr) {
+            return;
+        }
+        if (m_networkMonitorTimer->isActive()) {
+            m_networkMonitorTimer->stop();
+            m_networkMonitorToggleButton->setText(uiText(m_settings, "Старт", "Start"));
+            return;
+        }
+        refreshNetworkMonitoring();
+        m_networkMonitorTimer->start();
+        m_networkMonitorToggleButton->setText(uiText(m_settings, "Стоп", "Stop"));
+    });
+    connect(m_networkMonitorTable, &QTableWidget::itemSelectionChanged, this, [this]() {
+        if (m_networkMonitorTable == nullptr || m_networkMonitorDetails == nullptr || m_networkMonitorTable->currentRow() < 0) {
+            return;
+        }
+        QStringList lines;
+        for (int column = 0; column < m_networkMonitorTable->columnCount(); ++column) {
+            const auto* header = m_networkMonitorTable->horizontalHeaderItem(column);
+            const auto* item = m_networkMonitorTable->item(m_networkMonitorTable->currentRow(), column);
+            lines.append(QStringLiteral("%1: %2").arg(header != nullptr ? header->text() : QString(), item != nullptr ? item->text() : QString()));
+        }
+        m_networkMonitorDetails->setPlainText(lines.join(QLatin1Char('\n')));
+    });
+    return page;
+}
+
 QWidget* MainWindow::createPlaceholderPage(const QString& title, const QString& text) {
     auto* page = new QWidget(this);
     auto* root = new QVBoxLayout(page);
@@ -1078,28 +1278,33 @@ void MainWindow::configureMenuBar() {
     const QList<QPair<QString, int>> pages {
         {uiText(language, "Сканер IP", "IP Scanner"), 0},
         {QStringLiteral("HTTP / REQ"), 1},
+#ifndef Q_OS_ANDROID
         {QStringLiteral("Serial"), 2},
         {QStringLiteral("TCP"), 3},
         {QStringLiteral("UDP"), 4},
         {QStringLiteral("SSH"), 5},
         {QStringLiteral("Telnet"), 6},
         {QStringLiteral("SNMP Browser"), 7},
+        {uiText(language, "Поиск портов", "Search Ports"), 8},
+#else
+        {QStringLiteral("TCP"), 2},
+        {QStringLiteral("UDP"), 3},
+        {QStringLiteral("SSH"), 4},
+        {QStringLiteral("Telnet"), 5},
+        {QStringLiteral("SNMP Browser"), 6},
+        {uiText(language, "Поиск портов", "Search Ports"), 7},
+#endif
     };
     for (const auto& item : pages) {
         goToMenu->addAction(item.first, this, [this, index = item.second]() { syncCurrentPage(index); });
     }
-
-    auto* commandsMenu = mainMenu->addMenu(uiText(language, "Обновление", "Refresh"));
-    commandsMenu->addAction(uiText(language, "Автодиапазон", "Auto range"), this, &MainWindow::applySuggestedRange);
-    commandsMenu->addAction(uiText(language, "Обновить диапазон", "Refresh range"), this, &MainWindow::resolveHostnameRange);
-    commandsMenu->addAction(uiText(language, "Обновить адаптеры", "Refresh adapters"), this, &MainWindow::reloadAdapters);
 
     m_favoritesMenu = mainMenu->addMenu(uiText(language, "Анализ сети", "Network Analysis"));
     refreshFavoritesMenu();
 
     mainMenu->addAction(uiText(language, "Настройки", "Settings"), this, &MainWindow::openSettingsDialog);
 
-    auto* helpMenu = mainMenu->addMenu(uiText(language, "Справка", "Help"));
+    auto* helpMenu = mainMenu->addMenu(uiText(language, "Помощь и обновления", "Help and Updates"));
     helpMenu->addAction(uiText(language, "Руководство", "Guide"), this, [this]() {
         QMessageBox::information(
             this,
@@ -1127,11 +1332,7 @@ void MainWindow::configureMenuBar() {
             )
         );
     });
-    helpMenu->addAction(uiText(language, "О программе", "About"), this, [this]() {
-        QMessageBox::information(
-            this,
-            uiText(m_settings, "О программе", "About"),
-            QStringLiteral("Network Tools\nNative C++/Qt desktop utility for network diagnostics and transport control.")
-        );
+    helpMenu->addAction(uiText(language, "Проверить обновления", "Check for updates"), this, [this]() {
+        showUpdateDialog(false);
     });
 }

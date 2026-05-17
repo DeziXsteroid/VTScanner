@@ -5,11 +5,14 @@ MainWindow::MainWindow(QWidget* parent)
     , m_snapshots(new nt::SnapshotService(this))
     , m_scanner(new nt::NetworkScanService(m_vendorDb, this))
     , m_http(new nt::HttpRequestService(this))
+#ifndef Q_OS_ANDROID
     , m_serialSession(new nt::SerialSession(this))
+#endif
     , m_sshSession(new nt::SshProcessSession(this))
     , m_tcpSession(new nt::TcpClientSession(this))
     , m_telnetSession(new nt::TelnetSession(this))
-    , m_udpSession(new nt::UdpSocketSession(this)) {
+    , m_udpSession(new nt::UdpSocketSession(this))
+    , m_updateManager(new QNetworkAccessManager(this)) {
     m_settings->load();
     const bool compactWindowV1Applied = m_settings->value(QStringLiteral("window_compact_v1"), false).toBool(false);
     if (!compactWindowV1Applied) {
@@ -94,9 +97,14 @@ MainWindow::MainWindow(QWidget* parent)
     m_scanBackgroundRefreshTimer = new QTimer(this);
     m_scanBackgroundRefreshTimer->setSingleShot(true);
     m_scanBackgroundRefreshTimer->setInterval(qMax(5, m_settings->value(QStringLiteral("auto_scan_interval_sec"), 30).toInt(30)) * 1000);
+#ifndef Q_OS_ANDROID
     m_serialPortRefreshTimer = new QTimer(this);
     m_serialPortRefreshTimer->setSingleShot(false);
     m_serialPortRefreshTimer->setInterval(10000);
+#endif
+    m_networkMonitorTimer = new QTimer(this);
+    m_networkMonitorTimer->setSingleShot(false);
+    m_networkMonitorTimer->setInterval(1500);
 
     qRegisterMetaType<nt::ScanRecord>("nt::ScanRecord");
     qRegisterMetaType<QList<nt::ScanRecord>>("QList<nt::ScanRecord>");
@@ -109,9 +117,8 @@ MainWindow::MainWindow(QWidget* parent)
     setWindowTitle(localizedWindowTitle(m_settings));
     resize(m_settings->initialWindowSize());
     setMinimumSize(840, 440);
-    if (m_settings->section(QStringLiteral("window")).value(QStringLiteral("maximized")).toBool(false)) {
-        setWindowState(windowState() | Qt::WindowMaximized);
-    }
+    setMaximumSize(1280, 820);
+    setWindowFlag(Qt::WindowMaximizeButtonHint, false);
     statusBar()->hide();
     updateScanFooter(localizedScanIdleText(m_settings));
 
@@ -131,7 +138,10 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_scanBackgroundRefreshTimer, &QTimer::timeout, this, [this]() {
         startScanBackgroundRefresh();
     });
+#ifndef Q_OS_ANDROID
     connect(m_serialPortRefreshTimer, &QTimer::timeout, this, &MainWindow::refreshSerialPorts);
+#endif
+    connect(m_networkMonitorTimer, &QTimer::timeout, this, &MainWindow::refreshNetworkMonitoring);
     connect(m_vendorDb, &nt::VendorDbService::statusChanged, this, [this](const QString&, bool available) {
         if (!available || m_scanRows.isEmpty()) {
             return;
@@ -176,6 +186,9 @@ MainWindow::MainWindow(QWidget* parent)
             }
         });
     }
+    QTimer::singleShot(2200, this, [this]() {
+        checkForUpdates(true);
+    });
 
     connect(m_scanner, &nt::NetworkScanService::scanStarted, this, [this]() {
         m_scanLaunchPending = false;
@@ -255,14 +268,13 @@ MainWindow::MainWindow(QWidget* parent)
         setHttpBlockAlignment(Qt::AlignHCenter);
         cursor.insertText(localizedRequestStatusDivider(), textFormat);
         cursor.insertBlock();
-        setHttpBlockAlignment(Qt::AlignLeft);
         cursor.insertText(statusText.trimmed(), statusFormat);
         cursor.insertBlock();
+        cursor.insertText(QStringLiteral("%1 %2").arg(response.method, response.url), textFormat);
         cursor.insertBlock();
         setHttpBlockAlignment(Qt::AlignHCenter);
         cursor.insertText(localizedRequestBodyDivider(), textFormat);
         cursor.insertBlock();
-        setHttpBlockAlignment(Qt::AlignLeft);
 
         QString text;
         if (!response.errorText.isEmpty()) {
@@ -278,7 +290,8 @@ MainWindow::MainWindow(QWidget* parent)
         if (text.trimmed().isEmpty()) {
             text = uiText(m_settings, "(пустой ответ)", "(empty response)");
         }
-        cursor.insertText(text, textFormat);
+        m_requestResponseEdit->setProperty("latest_http_body", text);
+        cursor.insertText(uiText(m_settings, "Тело ответа скрыто. Двойной клик по панели раскроет его.", "Response body is hidden. Double-click the panel to expand it."), textFormat);
         cursor.insertBlock();
         setHttpBlockAlignment(Qt::AlignHCenter);
         cursor.insertText(localizedRequestEndDivider(), textFormat);
@@ -289,6 +302,7 @@ MainWindow::MainWindow(QWidget* parent)
         m_requestResponseEdit->ensureCursorVisible();
     });
 
+#ifndef Q_OS_ANDROID
     connect(m_serialSession, &nt::SerialSession::dataReceived, this, [this](const QByteArray& bytes) {
         appendTrafficEntry(
             m_serialWidgets.outputBox,
@@ -305,6 +319,7 @@ MainWindow::MainWindow(QWidget* parent)
             m_serialWidgets.connectButton->setText(localizedConnectText(m_settings, connected));
         }
     });
+#endif
 
     connect(m_tcpSession, &nt::TcpClientSession::dataReceived, this, [this](const QByteArray& bytes) {
         appendTrafficEntry(
@@ -378,7 +393,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     m_settings->setSection(QStringLiteral("window"), QJsonObject{
         {QStringLiteral("width"), savedSize.width()},
         {QStringLiteral("height"), savedSize.height()},
-        {QStringLiteral("maximized"), isMaximized()},
+        {QStringLiteral("maximized"), false},
     });
     m_settings->save();
     m_scanner->cancel();
@@ -388,6 +403,35 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* object, QEvent* event) {
+    if (m_scanTable != nullptr && object == m_scanTable->viewport()) {
+        if (event->type() == QEvent::MouseMove) {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            maybeShowScanCellHover(mouseEvent->pos());
+        } else if (event->type() == QEvent::Resize) {
+            QTimer::singleShot(0, this, [this]() { applyScanColumnWidths(); });
+        }
+        return QMainWindow::eventFilter(object, event);
+    }
+    if (object == m_requestResponseEdit && event->type() == QEvent::MouseButtonDblClick) {
+        const QString body = m_requestResponseEdit != nullptr ? m_requestResponseEdit->property("latest_http_body").toString() : QString();
+        if (!body.isEmpty()) {
+            QTextCursor cursor(m_requestResponseEdit->document());
+            cursor.movePosition(QTextCursor::End);
+            QTextCharFormat textFormat;
+            textFormat.setFont(fixedFont());
+            textFormat.setForeground(isLightTheme() ? QColor("#1f2730") : QColor("#eef2f6"));
+            QTextBlockFormat blockFormat = cursor.blockFormat();
+            blockFormat.setAlignment(Qt::AlignLeft);
+            cursor.setBlockFormat(blockFormat);
+            cursor.insertText(body, textFormat);
+            cursor.insertBlock();
+            cursor.insertBlock();
+            m_requestResponseEdit->setProperty("latest_http_body", QString());
+            m_requestResponseEdit->setTextCursor(cursor);
+            m_requestResponseEdit->ensureCursorVisible();
+            return true;
+        }
+    }
     const bool isSessionTerminal = object == m_sshWidgets.outputBox || object == m_telnetWidgets.outputBox;
     if (!isSessionTerminal) {
         return QMainWindow::eventFilter(object, event);
@@ -601,6 +645,9 @@ void MainWindow::applyStyleSheet() {
             padding:6px;
         }
         QPushButton#httpSendButton {
+            background:#176b3a;
+            color:#ffffff;
+            border:1px solid #0f4f2a;
             min-width:190px;
             max-width:190px;
             min-height:26px;
@@ -835,8 +882,8 @@ void MainWindow::animateScanButtonPulse() {
 }
 
 void MainWindow::refreshTerminalFormats() {
-    m_sshTerminalBaseFormat = sessionBaseTerminalFormat();
-    m_telnetTerminalBaseFormat = sessionBaseTerminalFormat();
+    m_sshTerminalBaseFormat = defaultTerminalFormat(terminalPresetColor(m_settings->value(QStringLiteral("ssh_terminal_color"), QStringLiteral("mint")).toString(QStringLiteral("mint"))));
+    m_telnetTerminalBaseFormat = defaultTerminalFormat(terminalPresetColor(m_settings->value(QStringLiteral("telnet_terminal_color"), QStringLiteral("mint")).toString(QStringLiteral("mint"))));
     m_sshTerminalFormat = m_sshTerminalBaseFormat;
     m_telnetTerminalFormat = m_telnetTerminalBaseFormat;
 }

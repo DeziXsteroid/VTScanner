@@ -68,10 +68,14 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Network Tools");
     app.setOrganizationName("NetWorkTools");
-    app.setApplicationVersion("1.1");
+    app.setApplicationVersion("1.2");
     nt::AppPaths::ensureRuntimeTree();
 
     MainWindow window;
+#ifdef Q_OS_ANDROID
+    window.showMaximized();
+#else
     window.show();
+#endif
     return app.exec();
 }

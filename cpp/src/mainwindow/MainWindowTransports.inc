@@ -141,6 +141,7 @@ void MainWindow::openHttpHistory() {
     dialog.exec();
 }
 
+#ifndef Q_OS_ANDROID
 void MainWindow::refreshSerialPorts() {
     if (m_serialWidgets.portCombo == nullptr) {
         return;
@@ -228,6 +229,7 @@ void MainWindow::toggleSerial() {
             : QStringLiteral("Подключено %1 @ %2").arg(portName, m_serialWidgets.baudCombo->currentText())
     );
 }
+#endif
 
 void MainWindow::toggleTcp() {
     if (m_tcpSession->isConnected()) {
@@ -483,7 +485,9 @@ void MainWindow::sendQuickCommand(const QString& key, StreamWidgets& widgets, in
     widgets.inputEdit->setText(widgets.quickEdits[index]->text());
     saveQuickCommands(key, widgets);
     if (key == QStringLiteral("serial")) {
+#ifndef Q_OS_ANDROID
         sendSerialPayload();
+#endif
     } else if (key == QStringLiteral("tcp")) {
         sendTcpPayload();
     } else if (key == QStringLiteral("udp")) {
@@ -491,6 +495,7 @@ void MainWindow::sendQuickCommand(const QString& key, StreamWidgets& widgets, in
     }
 }
 
+#ifndef Q_OS_ANDROID
 void MainWindow::sendSerialPayload() {
     QByteArray payload = payloadFromText(m_serialWidgets.inputEdit->text(), m_serialWidgets.hexCheck->isChecked());
     if (payload.isEmpty()) {
@@ -505,6 +510,7 @@ void MainWindow::sendSerialPayload() {
     }
     appendTrafficEntry(m_serialWidgets.outputBox, QColor("#7fda72"), QStringLiteral("TX"), displayBytes(payload, m_serialWidgets.hexCheck->isChecked()));
 }
+#endif
 
 void MainWindow::sendTcpPayload() {
     QByteArray payload = payloadFromText(m_tcpWidgets.inputEdit->text(), m_tcpWidgets.hexCheck->isChecked());
@@ -732,4 +738,399 @@ QTextCharFormat* MainWindow::sessionTerminalFormatForBox(QTextEdit* box) {
         return &m_telnetTerminalFormat;
     }
     return nullptr;
+}
+
+void MainWindow::openSessionSettings(const QString& kind, SessionWidgets& widgets) {
+    QDialog dialog(this);
+    const bool isSsh = kind == QStringLiteral("ssh");
+    dialog.setWindowTitle(isSsh ? QStringLiteral("SSH settings") : QStringLiteral("Telnet settings"));
+    dialog.resize(isSsh ? QSize(560, 360) : QSize(360, 150));
+    auto* root = new QVBoxLayout(&dialog);
+    root->setContentsMargins(10, 10, 10, 10);
+    root->setSpacing(8);
+    auto* form = new QFormLayout();
+    form->setVerticalSpacing(6);
+    auto* colorCombo = new QComboBox(&dialog);
+    colorCombo->addItem(QStringLiteral("Mint"), QStringLiteral("mint"));
+    colorCombo->addItem(QStringLiteral("Green"), QStringLiteral("green"));
+    colorCombo->addItem(QStringLiteral("Amber"), QStringLiteral("amber"));
+    colorCombo->addItem(QStringLiteral("Cyan"), QStringLiteral("cyan"));
+    colorCombo->addItem(QStringLiteral("White"), QStringLiteral("white"));
+    const QString colorKey = kind + QStringLiteral("_terminal_color");
+    colorCombo->setCurrentIndex(qMax(0, colorCombo->findData(m_settings->value(colorKey, QStringLiteral("mint")).toString(QStringLiteral("mint")))));
+    form->addRow(uiText(m_settings, "Цвет терминала", "Terminal color"), colorCombo);
+    root->addLayout(form);
+
+    QPlainTextEdit* keyEdit = nullptr;
+    if (isSsh) {
+        auto* keyBox = new QGroupBox(uiText(m_settings, "SSH ключ профиля", "Profile SSH key"), &dialog);
+        auto* keyLayout = new QVBoxLayout(keyBox);
+        keyLayout->setContentsMargins(8, 8, 8, 8);
+        keyLayout->setSpacing(6);
+        keyEdit = new QPlainTextEdit(keyBox);
+        keyEdit->setPlaceholderText(uiText(
+            m_settings,
+            "Вставьте приватный ключ или путь к файлу ключа. Если ключ задан, пароль можно не вводить.",
+            "Paste a private key or a key file path. If a key is set, password can be empty."
+        ));
+        keyEdit->setMaximumHeight(150);
+        keyEdit->setPlainText(currentSessionProfile(widgets, 22).sshPrivateKey);
+        keyLayout->addWidget(keyEdit);
+        auto* keyButtons = new QHBoxLayout();
+        auto* chooseButton = new QPushButton(uiText(m_settings, "Выбрать файл", "Choose file"), keyBox);
+        auto* clearButton = new QPushButton(uiText(m_settings, "Очистить", "Clear"), keyBox);
+        keyButtons->addStretch(1);
+        keyButtons->addWidget(chooseButton);
+        keyButtons->addWidget(clearButton);
+        keyLayout->addLayout(keyButtons);
+        root->addWidget(keyBox);
+        connect(chooseButton, &QPushButton::clicked, &dialog, [this, keyEdit]() {
+            const QString path = QFileDialog::getOpenFileName(this, uiText(m_settings, "Выбрать SSH ключ", "Choose SSH key"));
+            if (!path.isEmpty()) {
+                keyEdit->setPlainText(QDir::toNativeSeparators(path));
+            }
+        });
+        connect(clearButton, &QPushButton::clicked, keyEdit, &QPlainTextEdit::clear);
+    }
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    if (auto* okButton = buttons->button(QDialogButtonBox::Ok)) {
+        okButton->setText(uiText(m_settings, "Сохранить", "Save"));
+    }
+    if (auto* cancelButton = buttons->button(QDialogButtonBox::Cancel)) {
+        cancelButton->setText(uiText(m_settings, "Отмена", "Cancel"));
+    }
+    root->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    m_settings->setValue(colorKey, colorCombo->currentData().toString());
+    if (isSsh && keyEdit != nullptr) {
+        auto profile = currentSessionProfile(widgets, 22);
+        profile.sshPrivateKey = keyEdit->toPlainText().trimmed();
+        QList<nt::SessionProfile> profiles = m_settings->sessionProfiles(kind, 22);
+        profiles.erase(std::remove_if(profiles.begin(), profiles.end(), [&](const auto& item) {
+            return item.name == profile.name;
+        }), profiles.end());
+        profiles.prepend(profile);
+        m_settings->storeSessionProfiles(kind, profiles, profile);
+        loadSessionProfiles(kind, widgets, 22);
+    }
+    m_settings->save();
+    refreshTerminalFormats();
+}
+
+void MainWindow::runPortSearch() {
+    if (m_portSearchHostEdit == nullptr || m_portSearchTable == nullptr) {
+        return;
+    }
+    QString input = property("port_search_input").toString().trimmed();
+    setProperty("port_search_input", QString());
+    if (input.isEmpty()) {
+        input = m_portSearchHostEdit->text().trimmed();
+        if (input.contains(QLatin1Char('-')) || input.contains(QStringLiteral(".."))) {
+            QMessageBox::information(this, uiText(m_settings, "Поиск портов", "Search Ports"), uiText(m_settings, "Для диапазона используйте поля справа и кнопку \"Сканировать диапазон\".", "Use the range fields and the \"Scan range\" button for ranges."));
+            return;
+        }
+    }
+    const QStringList hosts = expandPortSearchTargets(input);
+    if (hosts.isEmpty()) {
+        return;
+    }
+    m_portSearchTable->setRowCount(0);
+    if (m_portSearchButton != nullptr) {
+        m_portSearchButton->setEnabled(false);
+    }
+    if (m_portSearchRangeButton != nullptr) {
+        m_portSearchRangeButton->setEnabled(false);
+    }
+    QPointer<MainWindow> guard(this);
+    (void)QtConcurrent::run([guard, hosts]() {
+        QList<QPair<QString, PortProbeResult>> allResults;
+        QList<QPair<QString, PortProbeResult>> closedPreview;
+        const bool singleHost = hosts.size() == 1;
+        const QList<quint16> ports = portSearchPorts(singleHost);
+        const int timeoutMs = singleHost ? 28 : 8;
+        QList<PortProbeJob> jobs;
+        jobs.reserve(hosts.size() * ports.size());
+        for (const QString& host : hosts) {
+            for (const quint16 port : ports) {
+                jobs.append(PortProbeJob {host, port, timeoutMs});
+            }
+        }
+        const auto probed = QtConcurrent::blockingMapped(jobs, [](const PortProbeJob& job) {
+            return qMakePair(job.host, probeTcpPort(job.host, job.port, job.timeoutMs));
+        });
+        for (const auto& pair : probed) {
+            if (pair.second.open) {
+                allResults.append(pair);
+            } else if (closedPreview.size() < 40) {
+                closedPreview.append(pair);
+            }
+        }
+        while (allResults.size() < 15 && !closedPreview.isEmpty()) {
+            allResults.append(closedPreview.takeFirst());
+        }
+        QHash<QString, QString> hostMacs;
+        for (const QString& host : hosts) {
+            const QString mac = nt::NetworkScanService::lookupMac(host).trimmed();
+            hostMacs.insert(host, mac.isEmpty() ? QStringLiteral("-") : mac);
+        }
+        QMetaObject::invokeMethod(guard.data(), [guard, hosts, allResults, hostMacs]() {
+            if (guard == nullptr || guard->m_portSearchTable == nullptr) {
+                return;
+            }
+            guard->m_portSearchTable->setRowCount(0);
+            for (const auto& pair : allResults) {
+                const QString host = pair.first;
+                const PortProbeResult result = pair.second;
+                const int row = guard->m_portSearchTable->rowCount();
+                guard->m_portSearchTable->insertRow(row);
+                const QString mac = hostMacs.value(host, QStringLiteral("-"));
+                const QString responseText = result.responseMs >= 0
+                    ? uiText(guard->m_settings, "ответ %1 мс", "response %1 ms").arg(result.responseMs)
+                    : uiText(guard->m_settings, "ответ не измерен", "response not measured");
+                const QString checkedText = result.checkedAt.isValid()
+                    ? result.checkedAt.toString(QStringLiteral("dd.MM.yyyy HH:mm:ss"))
+                    : QDateTime::currentDateTime().toString(QStringLiteral("dd.MM.yyyy HH:mm:ss"));
+                const QStringList values {
+                    host,
+                    mac,
+                    QString::number(result.port),
+                    result.service,
+                    result.open ? uiText(guard->m_settings, "открыт", "open") : uiText(guard->m_settings, "нет ответа", "no response"),
+                    result.open
+                        ? uiText(guard->m_settings, "%1 | проверено %2 | TCP открыт", "%1 | checked %2 | TCP open").arg(responseText, checkedText)
+                        : uiText(guard->m_settings, "%1 | проверено %2 | порт не ответил", "%1 | checked %2 | port did not respond").arg(responseText, checkedText),
+                };
+                for (int column = 0; column < values.size(); ++column) {
+                    auto* item = new QTableWidgetItem(values.at(column));
+                    item->setForeground(QBrush(column == 4
+                        ? (result.open ? QColor("#2f9e44") : QColor("#8a96a3"))
+                        : (guard->isLightTheme() ? QColor("#1f2730") : QColor("#eef2f6"))));
+                    guard->m_portSearchTable->setItem(row, column, item);
+                }
+            }
+            Q_UNUSED(hosts)
+            if (guard->m_portSearchButton != nullptr) {
+                guard->m_portSearchButton->setEnabled(true);
+            }
+            if (guard->m_portSearchRangeButton != nullptr) {
+                guard->m_portSearchRangeButton->setEnabled(true);
+            }
+        });
+    });
+}
+
+void MainWindow::refreshNetworkMonitoring() {
+    if (m_networkMonitorTable == nullptr) {
+        return;
+    }
+    QProcess process;
+#ifdef Q_OS_WIN
+    process.start(QStringLiteral("netstat"), {QStringLiteral("-ano")});
+#else
+    process.start(QStringLiteral("netstat"), {QStringLiteral("-tunp")});
+#endif
+    if (!process.waitForFinished(900)) {
+        process.kill();
+        return;
+    }
+    const QString output = QString::fromLocal8Bit(process.readAllStandardOutput());
+    m_networkMonitorTable->setRowCount(0);
+    const QStringList lines = output.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString& rawLine : lines) {
+        const QString line = rawLine.simplified();
+        if (!line.startsWith(QStringLiteral("TCP"), Qt::CaseInsensitive)
+            && !line.startsWith(QStringLiteral("UDP"), Qt::CaseInsensitive)
+            && !line.startsWith(QStringLiteral("tcp"), Qt::CaseInsensitive)
+            && !line.startsWith(QStringLiteral("udp"), Qt::CaseInsensitive)) {
+            continue;
+        }
+        const QStringList parts = line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (parts.size() < 3) {
+            continue;
+        }
+        const QString proto = parts.at(0).toUpper();
+        const QString local = parts.value(1);
+        const QString remote = parts.value(2);
+        const bool isUdp = proto.startsWith(QStringLiteral("UDP"));
+        const QString state = isUdp ? QStringLiteral("-") : parts.value(3, QStringLiteral("-"));
+        const QString pid = isUdp ? parts.value(3, QStringLiteral("-")) : parts.value(4, QStringLiteral("-"));
+        const int row = m_networkMonitorTable->rowCount();
+        m_networkMonitorTable->insertRow(row);
+        const QString direction = remote.contains(QStringLiteral("0.0.0.0")) || remote == QStringLiteral("*:*") ? QStringLiteral("listen") : QStringLiteral("flow");
+        const QStringList values {proto, local, remote, state, pid, direction};
+        for (int column = 0; column < values.size(); ++column) {
+            auto* item = new QTableWidgetItem(values.at(column));
+            if (direction == QStringLiteral("listen")) {
+                item->setBackground(QBrush(isLightTheme() ? QColor("#e7eef7") : QColor("#172233")));
+            } else if (proto.startsWith(QStringLiteral("UDP"))) {
+                item->setBackground(QBrush(isLightTheme() ? QColor("#eef1df") : QColor("#222817")));
+            }
+            m_networkMonitorTable->setItem(row, column, item);
+        }
+    }
+    if (m_networkMonitorStatusLabel != nullptr) {
+        m_networkMonitorStatusLabel->setText(uiText(m_settings, "Соединений: %1", "Connections: %1").arg(m_networkMonitorTable->rowCount()));
+    }
+}
+
+void MainWindow::showUpdateDialog(bool automatic) {
+    checkForUpdates(automatic);
+}
+
+void MainWindow::checkForUpdates(bool automatic) {
+    if (m_updateManager == nullptr) {
+        return;
+    }
+    QNetworkRequest request(QUrl(QStringLiteral("https://api.github.com/repos/DeziXsteroid/Universal_Network_Tools/releases/latest")));
+    request.setRawHeader("User-Agent", QByteArrayLiteral("NetworkToolsQt/1.2"));
+    request.setRawHeader("Accept", QByteArrayLiteral("application/vnd.github+json"));
+    auto* reply = m_updateManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, automatic]() {
+        const QByteArray payload = reply->readAll();
+        const bool networkOk = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        if (!networkOk) {
+            if (!automatic) {
+                QMessageBox::information(this, QStringLiteral("Help and Updates"), uiText(m_settings, "Не удалось проверить обновления.", "Could not check for updates."));
+            }
+            return;
+        }
+        const auto doc = QJsonDocument::fromJson(payload);
+        if (!doc.isObject()) {
+            return;
+        }
+        const QJsonObject object = doc.object();
+        const QString latest = object.value(QStringLiteral("tag_name")).toString(object.value(QStringLiteral("name")).toString()).trimmed();
+        const QString latestClean = latest;
+        const QString current = QCoreApplication::applicationVersion().trimmed();
+        auto normalizeVersionText = [](QString value) {
+            value = value.trimmed().toLower();
+            if (value.startsWith(QLatin1Char('v'))) {
+                value.remove(0, 1);
+            }
+            while (value.endsWith(QStringLiteral(".0"))) {
+                value.chop(2);
+            }
+            return value;
+        };
+        const bool hasUpdate = !latestClean.isEmpty()
+            && normalizeVersionText(latestClean) != normalizeVersionText(current);
+        if (automatic && !hasUpdate) {
+            return;
+        }
+
+        QDialog dialog(this);
+        dialog.setWindowTitle(uiText(m_settings, "Помощь и обновления", "Help and Updates"));
+        dialog.resize(460, 220);
+        auto* root = new QVBoxLayout(&dialog);
+        root->setContentsMargins(12, 8, 12, 8);
+        root->setSpacing(7);
+        auto* title = new QLabel(
+            hasUpdate
+                ? uiText(m_settings, "Обнаружена новая версия: %1", "New version detected: %1").arg(latestClean)
+                : uiText(m_settings, "Установлена актуальная версия: %1", "Current version is installed: %1").arg(current),
+            &dialog
+        );
+        title->setObjectName(QStringLiteral("sectionLabel"));
+        QFont titleFont = title->font();
+        titleFont.setPointSize(qMax(titleFont.pointSize() + 3, 14));
+        titleFont.setBold(true);
+        title->setFont(titleFont);
+        title->setWordWrap(true);
+        QPushButton* updateButton = nullptr;
+        root->addWidget(title);
+        QString body = object.value(QStringLiteral("body")).toString().trimmed();
+        body.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        QStringList noteLines;
+        for (QString line : body.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+            line = line.trimmed();
+            while (line.startsWith(QLatin1Char('#')) || line.startsWith(QLatin1Char('-')) || line.startsWith(QLatin1Char('*'))) {
+                line.remove(0, 1);
+                line = line.trimmed();
+            }
+            if (!line.isEmpty()) {
+                noteLines.append(line);
+            }
+            if (noteLines.size() >= 5) {
+                break;
+            }
+        }
+        QString notesText = noteLines.join(QLatin1Char('\n'));
+        if (body.size() > notesText.size() + 80 || body.split(QLatin1Char('\n'), Qt::SkipEmptyParts).size() > noteLines.size()) {
+            notesText += uiText(m_settings, "\n... ничего", "\n... nothing");
+        }
+        if (notesText.trimmed().isEmpty()) {
+            notesText = uiText(m_settings, "Ничего", "Nothing");
+        }
+        auto* notes = new QLabel(notesText, &dialog);
+        notes->setWordWrap(true);
+        notes->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        notes->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        root->addWidget(notes, 1);
+        auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+        if (hasUpdate) {
+            updateButton = new QPushButton(uiText(m_settings, "Обновить", "Update"), &dialog);
+            buttons->addButton(updateButton, QDialogButtonBox::ActionRole);
+        }
+        if (auto* closeButton = buttons->button(QDialogButtonBox::Close)) {
+            closeButton->setText(uiText(m_settings, "Закрыть", "Close"));
+        }
+        root->addWidget(buttons);
+        connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        if (updateButton != nullptr) {
+            connect(updateButton, &QPushButton::clicked, &dialog, [this, object, &dialog]() {
+                QString assetUrl;
+                const QJsonArray assets = object.value(QStringLiteral("assets")).toArray();
+                for (const auto& value : assets) {
+                    const QJsonObject asset = value.toObject();
+                    const QString name = asset.value(QStringLiteral("name")).toString();
+#ifdef Q_OS_WIN
+                    const bool matchesPlatform = name.endsWith(QStringLiteral(".exe"), Qt::CaseInsensitive);
+#elif defined(Q_OS_MACOS)
+                    const bool matchesPlatform = name.endsWith(QStringLiteral(".dmg"), Qt::CaseInsensitive);
+#else
+                    const bool matchesPlatform = name.endsWith(QStringLiteral(".sh"), Qt::CaseInsensitive);
+#endif
+                    if (matchesPlatform) {
+                        assetUrl = asset.value(QStringLiteral("browser_download_url")).toString();
+                        break;
+                    }
+                }
+                if (assetUrl.isEmpty()) {
+                    const QString url = object.value(QStringLiteral("html_url")).toString(QStringLiteral("https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest"));
+                    QDesktopServices::openUrl(QUrl(url));
+                    dialog.accept();
+                    return;
+                }
+                auto* downloadReply = m_updateManager->get(QNetworkRequest(QUrl(assetUrl)));
+                connect(downloadReply, &QNetworkReply::finished, this, [this, downloadReply, assetUrl]() {
+                    const QByteArray data = downloadReply->readAll();
+                    const bool ok = downloadReply->error() == QNetworkReply::NoError && !data.isEmpty();
+                    downloadReply->deleteLater();
+                    if (!ok) {
+                        QMessageBox::warning(this, QStringLiteral("Help and Updates"), uiText(m_settings, "Не удалось скачать обновление.", "Could not download the update."));
+                        return;
+                    }
+                    const QString fileName = QUrl(assetUrl).fileName();
+                    const QString path = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath(fileName.isEmpty() ? QStringLiteral("NetworkToolsUpdate") : fileName);
+                    QFile file(path);
+                    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || file.write(data) != data.size()) {
+                        QMessageBox::warning(this, QStringLiteral("Help and Updates"), uiText(m_settings, "Не удалось сохранить обновление.", "Could not save the update."));
+                        return;
+                    }
+                    file.close();
+                    QProcess::startDetached(path, QStringList{});
+                    qApp->quit();
+                });
+                dialog.accept();
+            });
+        }
+        dialog.exec();
+    });
 }

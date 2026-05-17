@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(NetworkToolsQt VERSION 1.1.0 LANGUAGES CXX)
+project(NetworkToolsQt VERSION 1.2.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -8,7 +8,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network Concurrent SerialPort)
+set(NETWORK_TOOLS_QT_COMPONENTS Widgets Network Concurrent)
+if(NOT ANDROID)
+    list(APPEND NETWORK_TOOLS_QT_COMPONENTS SerialPort)
+endif()
+find_package(Qt6 REQUIRED COMPONENTS ${NETWORK_TOOLS_QT_COMPONENTS})
 
 set(APP_WIN_RC)
 set(APP_MAC_ICNS)
@@ -60,8 +64,6 @@ add_executable(NetworkToolsQt
     src/network/TcpClientSession.h
     src/network/UdpSocketSession.cpp
     src/network/UdpSocketSession.h
-    src/network/SerialSession.cpp
-    src/network/SerialSession.h
     src/network/NetworkScanService.cpp
     src/network/NetworkScanService.h
     src/widgets/CodeEditor.cpp
@@ -70,14 +72,30 @@ add_executable(NetworkToolsQt
     ${APP_MAC_ICNS}
 )
 
+if(NOT ANDROID)
+    target_sources(NetworkToolsQt PRIVATE
+        src/network/SerialSession.cpp
+        src/network/SerialSession.h
+    )
+endif()
+
 target_include_directories(NetworkToolsQt PRIVATE src)
 
 target_link_libraries(NetworkToolsQt PRIVATE
     Qt6::Widgets
     Qt6::Network
     Qt6::Concurrent
-    Qt6::SerialPort
 )
+
+if(NOT ANDROID)
+    target_link_libraries(NetworkToolsQt PRIVATE Qt6::SerialPort)
+endif()
+
+if(ANDROID)
+    set_target_properties(NetworkToolsQt PROPERTIES
+        QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/android"
+    )
+endif()
 
 if(APPLE)
     set_target_properties(NetworkToolsQt PROPERTIES
