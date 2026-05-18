@@ -1112,7 +1112,7 @@ QWidget* MainWindow::createSearchPortsPage() {
     toolbarLayout->addWidget(new QLabel(QStringLiteral("IP"), toolbar), 0, 0);
     m_portSearchHostEdit = new QLineEdit(toolbar);
     m_portSearchHostEdit->setPlaceholderText(QStringLiteral("192.168.0.1"));
-    m_portSearchHostEdit->setFixedWidth(168);
+    m_portSearchHostEdit->setFixedWidth(118);
     toolbarLayout->addWidget(m_portSearchHostEdit, 0, 1);
     m_portSearchButton = new QPushButton(uiText(language, "Сканировать порты", "Scan ports"), toolbar);
     m_portSearchButton->setFixedWidth(132);

@@ -847,8 +847,7 @@ void MainWindow::runPortSearch() {
         m_portSearchRangeButton->setEnabled(false);
     }
     if (m_portSearchStatusLabel != nullptr) {
-        m_portSearchStatusLabel->setText(uiText(m_settings, "Сканирование портов...", "Scanning ports..."));
-        m_portSearchStatusLabel->show();
+        m_portSearchStatusLabel->hide();
     }
     QPointer<MainWindow> guard(this);
     (void)QtConcurrent::run([guard, hosts]() {
@@ -921,15 +920,9 @@ void MainWindow::runPortSearch() {
                     guard->m_portSearchTable->setItem(row, column, item);
                 }
             }
+            Q_UNUSED(openPortCount)
             if (guard->m_portSearchStatusLabel != nullptr) {
-                guard->m_portSearchStatusLabel->setText(
-                    openPortCount > 0
-                        ? uiText(guard->m_settings, "Найдено IP: %1 | открытых портов: %2", "Hosts found: %1 | open ports: %2")
-                            .arg(guard->m_portSearchTable->rowCount())
-                            .arg(openPortCount)
-                        : uiText(guard->m_settings, "Ответов по TCP-портам нет", "No TCP port responses")
-                );
-                guard->m_portSearchStatusLabel->show();
+                guard->m_portSearchStatusLabel->hide();
             }
             if (guard->m_portSearchButton != nullptr) {
                 guard->m_portSearchButton->setEnabled(true);
@@ -1004,7 +997,7 @@ void MainWindow::checkForUpdates(bool automatic) {
         return;
     }
     QNetworkRequest request(QUrl(QStringLiteral("https://api.github.com/repos/DeziXsteroid/Universal_Network_Tools/releases/latest")));
-    request.setRawHeader("User-Agent", QByteArrayLiteral("NetworkToolsQt/1.2.1"));
+    request.setRawHeader("User-Agent", QByteArrayLiteral("NetworkToolsQt/1.3"));
     request.setRawHeader("Accept", QByteArrayLiteral("application/vnd.github+json"));
     auto* reply = m_updateManager->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, automatic]() {
