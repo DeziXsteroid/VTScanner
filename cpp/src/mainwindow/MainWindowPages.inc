@@ -1112,40 +1112,39 @@ QWidget* MainWindow::createSearchPortsPage() {
     toolbarLayout->addWidget(new QLabel(QStringLiteral("IP"), toolbar), 0, 0);
     m_portSearchHostEdit = new QLineEdit(toolbar);
     m_portSearchHostEdit->setPlaceholderText(QStringLiteral("192.168.0.1"));
-    m_portSearchHostEdit->setMinimumWidth(190);
+    m_portSearchHostEdit->setFixedWidth(168);
     toolbarLayout->addWidget(m_portSearchHostEdit, 0, 1);
     m_portSearchButton = new QPushButton(uiText(language, "Сканировать порты", "Scan ports"), toolbar);
+    m_portSearchButton->setFixedWidth(132);
     toolbarLayout->addWidget(m_portSearchButton, 0, 2);
     auto* orLabel = new QLabel(uiText(language, "или диапазон", "or range"), toolbar);
     orLabel->setAlignment(Qt::AlignCenter);
     toolbarLayout->addWidget(orLabel, 0, 3);
     m_portSearchRangeStartEdit = new QLineEdit(toolbar);
     m_portSearchRangeStartEdit->setPlaceholderText(QStringLiteral("192.168.0.1"));
-    m_portSearchRangeStartEdit->setMinimumWidth(150);
+    m_portSearchRangeStartEdit->setFixedWidth(132);
     toolbarLayout->addWidget(m_portSearchRangeStartEdit, 0, 4);
     toolbarLayout->addWidget(new QLabel(QStringLiteral("-"), toolbar), 0, 5);
     m_portSearchRangeEndEdit = new QLineEdit(toolbar);
     m_portSearchRangeEndEdit->setPlaceholderText(QStringLiteral("192.168.0.50"));
-    m_portSearchRangeEndEdit->setMinimumWidth(150);
+    m_portSearchRangeEndEdit->setFixedWidth(132);
     toolbarLayout->addWidget(m_portSearchRangeEndEdit, 0, 6);
     m_portSearchRangeButton = new QPushButton(uiText(language, "Сканировать диапазон", "Scan range"), toolbar);
+    m_portSearchRangeButton->setFixedWidth(142);
     toolbarLayout->addWidget(m_portSearchRangeButton, 0, 7);
-    toolbarLayout->setColumnStretch(1, 1);
-    toolbarLayout->setColumnStretch(4, 1);
-    toolbarLayout->setColumnStretch(6, 1);
+    toolbarLayout->setColumnStretch(8, 1);
     m_portSearchStatusLabel = new QLabel(toolbar);
     m_portSearchStatusLabel->setObjectName(QStringLiteral("statusHint"));
     m_portSearchStatusLabel->hide();
     root->addWidget(toolbar, 0);
 
-    m_portSearchTable = new QTableWidget(0, 6, page);
+    m_portSearchTable = new QTableWidget(0, 5, page);
     m_portSearchTable->setHorizontalHeaderLabels({
         QStringLiteral("IP"),
         QStringLiteral("MAC"),
-        uiText(language, "Порт", "Port"),
-        uiText(language, "Сервис", "Service"),
-        uiText(language, "Статус", "State"),
-        uiText(language, "Детали", "Notes"),
+        uiText(language, "Порты", "Ports"),
+        uiText(language, "Сервисы", "Services"),
+        uiText(language, "Ответ", "Response"),
     });
     m_portSearchTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_portSearchTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -1155,14 +1154,12 @@ QWidget* MainWindow::createSearchPortsPage() {
     m_portSearchTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
     m_portSearchTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
     m_portSearchTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
-    m_portSearchTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
+    m_portSearchTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_portSearchTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    m_portSearchTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
     m_portSearchTable->setColumnWidth(0, 132);
     m_portSearchTable->setColumnWidth(1, 132);
-    m_portSearchTable->setColumnWidth(2, 86);
-    m_portSearchTable->setColumnWidth(3, 112);
-    m_portSearchTable->setColumnWidth(5, 340);
+    m_portSearchTable->setColumnWidth(2, 170);
+    m_portSearchTable->setColumnWidth(4, 120);
     root->addWidget(m_portSearchTable, 1);
 
     connect(m_portSearchButton, &QPushButton::clicked, this, &MainWindow::runPortSearch);

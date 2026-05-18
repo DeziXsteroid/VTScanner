@@ -596,16 +596,11 @@ void MainWindow::rebuildScanTable() {
         return;
     }
     m_scanTable->setRowCount(0);
-    QList<nt::ScanRecord> sortedRows = m_scanRows;
-    std::sort(sortedRows.begin(), sortedRows.end(), [this](const nt::ScanRecord& left, const nt::ScanRecord& right) {
-        const quint32 leftIp = ipToInt(left.ip);
-        const quint32 rightIp = ipToInt(right.ip);
-        return m_scanSortAscending ? leftIp < rightIp : leftIp > rightIp;
-    });
+    const QList<nt::ScanRecord> displayRows = m_scanRows;
     const bool showRoutedSections = m_settings != nullptr
         && m_settings->value(QStringLiteral("scan_routed_ranges"), false).toBool(false);
     QString lastSubnetLabel;
-    for (const auto& record : sortedRows) {
+    for (const auto& record : displayRows) {
         const nt::ScanRecord& safeRecord = record;
         if (safeRecord.ip.isEmpty()) {
             continue;
@@ -658,12 +653,16 @@ void MainWindow::rebuildScanTable() {
             item->setText(col == ScanColumnIp ? scanIpCellText(safeRecord.ip, isNewHost) : values.at(col));
             QColor cellBackground = isGatewayHost ? gatewayBackground : defaultBackground;
             QColor cellForeground = isGatewayHost ? gatewayForeground : defaultForeground;
-            if (col == ScanColumnPing
+            QColor pingBackground;
+            QColor pingForeground;
+            const bool pingBadgeEnabled = col == ScanColumnPing
                 && m_settings != nullptr
-                && m_settings->value(QStringLiteral("scan_ping_health_colors"), false).toBool(false)) {
-                pingHealthBrushes(values.at(col), &cellBackground, &cellForeground);
-            }
+                && m_settings->value(QStringLiteral("scan_ping_health_colors"), false).toBool(false)
+                && pingHealthBrushes(values.at(col), &pingBackground, &pingForeground);
             item->setBackground(QBrush(cellBackground));
+            if (col == ScanColumnPing) {
+                setPingHealthCellWidget(m_scanTable, rowIndex, col, values.at(col), pingBadgeEnabled, pingBackground, pingForeground);
+            }
             if (col == ScanColumnIp) {
                 item->setData(Qt::UserRole, safeRecord.ip);
             }
@@ -869,6 +868,11 @@ void MainWindow::updateScanSortButton() {
 
 void MainWindow::toggleScanSortOrder() {
     m_scanSortAscending = !m_scanSortAscending;
+    std::sort(m_scanRows.begin(), m_scanRows.end(), [this](const nt::ScanRecord& left, const nt::ScanRecord& right) {
+        const quint32 leftIp = ipToInt(left.ip);
+        const quint32 rightIp = ipToInt(right.ip);
+        return m_scanSortAscending ? leftIp < rightIp : leftIp > rightIp;
+    });
     updateScanSortButton();
     rebuildScanTable();
 }
@@ -986,7 +990,7 @@ void MainWindow::appendScanRecord(const nt::ScanRecord& record) {
 
     int rowIndex = findRowByIp(m_scanTable, displayRecord.ip);
     if (rowIndex < 0) {
-        rowIndex = insertionRowForIp(m_scanTable, displayRecord.ip, m_scanSortAscending);
+        rowIndex = m_scanTable->rowCount();
         m_scanTable->insertRow(rowIndex);
     }
 
@@ -1021,12 +1025,16 @@ void MainWindow::appendScanRecord(const nt::ScanRecord& record) {
         }
         QColor cellBackground = isGatewayHost ? gatewayBackground : defaultBackground;
         QColor cellForeground = isGatewayHost ? gatewayForeground : defaultForeground;
-        if (col == ScanColumnPing
+        QColor pingBackground;
+        QColor pingForeground;
+        const bool pingBadgeEnabled = col == ScanColumnPing
             && m_settings != nullptr
-            && m_settings->value(QStringLiteral("scan_ping_health_colors"), false).toBool(false)) {
-            pingHealthBrushes(values.at(col), &cellBackground, &cellForeground);
-        }
+            && m_settings->value(QStringLiteral("scan_ping_health_colors"), false).toBool(false)
+            && pingHealthBrushes(values.at(col), &pingBackground, &pingForeground);
         item->setBackground(QBrush(cellBackground));
+        if (col == ScanColumnPing) {
+            setPingHealthCellWidget(m_scanTable, rowIndex, col, values.at(col), pingBadgeEnabled, pingBackground, pingForeground);
+        }
         if (col == ScanColumnIp) {
             item->setData(Qt::UserRole, displayRecord.ip);
         }
@@ -1079,12 +1087,7 @@ void MainWindow::finalizeScanBackgroundRefresh(const QList<nt::ScanRecord>& reco
     m_scanLaunchPending = false;
     const QList<nt::ScanRecord> previousRows = m_scanRows;
     QSet<QString> refreshedIps;
-    QList<nt::ScanRecord> sortedRecords = records;
-    std::sort(sortedRecords.begin(), sortedRecords.end(), [this](const nt::ScanRecord& left, const nt::ScanRecord& right) {
-        const quint32 leftIp = ipToInt(left.ip);
-        const quint32 rightIp = ipToInt(right.ip);
-        return m_scanSortAscending ? leftIp < rightIp : leftIp > rightIp;
-    });
+    const QList<nt::ScanRecord> sortedRecords = records;
 
     int added = 0;
     int updated = 0;
@@ -1200,11 +1203,6 @@ void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int duration
             sortedRecords.append(previous);
         }
     }
-    std::sort(sortedRecords.begin(), sortedRecords.end(), [this](const nt::ScanRecord& left, const nt::ScanRecord& right) {
-        const quint32 leftIp = ipToInt(left.ip);
-        const quint32 rightIp = ipToInt(right.ip);
-        return m_scanSortAscending ? leftIp < rightIp : leftIp > rightIp;
-    });
     m_scanRows = sortedRecords;
     rebuildScanTable();
     if (m_scanTable != nullptr) {

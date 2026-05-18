@@ -846,10 +846,12 @@ void MainWindow::runPortSearch() {
     if (m_portSearchRangeButton != nullptr) {
         m_portSearchRangeButton->setEnabled(false);
     }
+    if (m_portSearchStatusLabel != nullptr) {
+        m_portSearchStatusLabel->setText(uiText(m_settings, "Сканирование портов...", "Scanning ports..."));
+        m_portSearchStatusLabel->show();
+    }
     QPointer<MainWindow> guard(this);
     (void)QtConcurrent::run([guard, hosts]() {
-        QList<QPair<QString, PortProbeResult>> allResults;
-        QList<QPair<QString, PortProbeResult>> closedPreview;
         const bool singleHost = hosts.size() == 1;
         const QList<quint16> ports = portSearchPorts(singleHost);
         const int timeoutMs = singleHost ? 28 : 8;
@@ -863,57 +865,72 @@ void MainWindow::runPortSearch() {
         const auto probed = QtConcurrent::blockingMapped(jobs, [](const PortProbeJob& job) {
             return qMakePair(job.host, probeTcpPort(job.host, job.port, job.timeoutMs));
         });
+        QHash<QString, QList<PortProbeResult>> openResultsByHost;
         for (const auto& pair : probed) {
             if (pair.second.open) {
-                allResults.append(pair);
-            } else if (closedPreview.size() < 40) {
-                closedPreview.append(pair);
+                openResultsByHost[pair.first].append(pair.second);
             }
-        }
-        while (allResults.size() < 15 && !closedPreview.isEmpty()) {
-            allResults.append(closedPreview.takeFirst());
         }
         QHash<QString, QString> hostMacs;
         for (const QString& host : hosts) {
+            if (!openResultsByHost.contains(host)) {
+                continue;
+            }
             const QString mac = nt::NetworkScanService::lookupMac(host).trimmed();
             hostMacs.insert(host, mac.isEmpty() ? QStringLiteral("-") : mac);
         }
-        QMetaObject::invokeMethod(guard.data(), [guard, hosts, allResults, hostMacs]() {
+        QMetaObject::invokeMethod(guard.data(), [guard, hosts, openResultsByHost, hostMacs]() {
             if (guard == nullptr || guard->m_portSearchTable == nullptr) {
                 return;
             }
             guard->m_portSearchTable->setRowCount(0);
-            for (const auto& pair : allResults) {
-                const QString host = pair.first;
-                const PortProbeResult result = pair.second;
+            int openPortCount = 0;
+            for (const QString& host : hosts) {
+                const QList<PortProbeResult> hostResults = openResultsByHost.value(host);
+                if (hostResults.isEmpty()) {
+                    continue;
+                }
+                openPortCount += hostResults.size();
                 const int row = guard->m_portSearchTable->rowCount();
                 guard->m_portSearchTable->insertRow(row);
                 const QString mac = hostMacs.value(host, QStringLiteral("-"));
-                const QString responseText = result.responseMs >= 0
-                    ? uiText(guard->m_settings, "ответ %1 мс", "response %1 ms").arg(result.responseMs)
-                    : uiText(guard->m_settings, "ответ не измерен", "response not measured");
-                const QString checkedText = result.checkedAt.isValid()
-                    ? result.checkedAt.toString(QStringLiteral("dd.MM.yyyy HH:mm:ss"))
-                    : QDateTime::currentDateTime().toString(QStringLiteral("dd.MM.yyyy HH:mm:ss"));
+                QStringList portValues;
+                QStringList serviceValues;
+                QStringList responseValues;
+                for (const PortProbeResult& result : hostResults) {
+                    portValues.append(QString::number(result.port));
+                    serviceValues.append(result.service.trimmed().isEmpty()
+                        ? QStringLiteral("%1/tcp").arg(result.port)
+                        : QStringLiteral("%1 %2").arg(result.port).arg(result.service));
+                    if (result.responseMs >= 0) {
+                        responseValues.append(QStringLiteral("%1: %2 ms").arg(result.port).arg(result.responseMs));
+                    }
+                }
                 const QStringList values {
                     host,
                     mac,
-                    QString::number(result.port),
-                    result.service,
-                    result.open ? uiText(guard->m_settings, "открыт", "open") : uiText(guard->m_settings, "нет ответа", "no response"),
-                    result.open
-                        ? uiText(guard->m_settings, "%1 | проверено %2 | TCP открыт", "%1 | checked %2 | TCP open").arg(responseText, checkedText)
-                        : uiText(guard->m_settings, "%1 | проверено %2 | порт не ответил", "%1 | checked %2 | port did not respond").arg(responseText, checkedText),
+                    portValues.join(QStringLiteral(", ")),
+                    serviceValues.join(QStringLiteral(", ")),
+                    responseValues.isEmpty() ? uiText(guard->m_settings, "есть ответ", "responded") : responseValues.join(QStringLiteral(", ")),
                 };
                 for (int column = 0; column < values.size(); ++column) {
                     auto* item = new QTableWidgetItem(values.at(column));
-                    item->setForeground(QBrush(column == 4
-                        ? (result.open ? QColor("#2f9e44") : QColor("#8a96a3"))
+                    item->setForeground(QBrush((column == 2 || column == 4)
+                        ? QColor("#2f9e44")
                         : (guard->isLightTheme() ? QColor("#1f2730") : QColor("#eef2f6"))));
                     guard->m_portSearchTable->setItem(row, column, item);
                 }
             }
-            Q_UNUSED(hosts)
+            if (guard->m_portSearchStatusLabel != nullptr) {
+                guard->m_portSearchStatusLabel->setText(
+                    openPortCount > 0
+                        ? uiText(guard->m_settings, "Найдено IP: %1 | открытых портов: %2", "Hosts found: %1 | open ports: %2")
+                            .arg(guard->m_portSearchTable->rowCount())
+                            .arg(openPortCount)
+                        : uiText(guard->m_settings, "Ответов по TCP-портам нет", "No TCP port responses")
+                );
+                guard->m_portSearchStatusLabel->show();
+            }
             if (guard->m_portSearchButton != nullptr) {
                 guard->m_portSearchButton->setEnabled(true);
             }
@@ -987,7 +1004,7 @@ void MainWindow::checkForUpdates(bool automatic) {
         return;
     }
     QNetworkRequest request(QUrl(QStringLiteral("https://api.github.com/repos/DeziXsteroid/Universal_Network_Tools/releases/latest")));
-    request.setRawHeader("User-Agent", QByteArrayLiteral("NetworkToolsQt/1.2"));
+    request.setRawHeader("User-Agent", QByteArrayLiteral("NetworkToolsQt/1.2.1"));
     request.setRawHeader("Accept", QByteArrayLiteral("application/vnd.github+json"));
     auto* reply = m_updateManager->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, automatic]() {
@@ -1026,19 +1043,19 @@ void MainWindow::checkForUpdates(bool automatic) {
 
         QDialog dialog(this);
         dialog.setWindowTitle(uiText(m_settings, "Помощь и обновления", "Help and Updates"));
-        dialog.resize(460, 220);
+        dialog.resize(380, 170);
         auto* root = new QVBoxLayout(&dialog);
-        root->setContentsMargins(12, 8, 12, 8);
-        root->setSpacing(7);
+        root->setContentsMargins(10, 7, 10, 7);
+        root->setSpacing(5);
         auto* title = new QLabel(
             hasUpdate
-                ? uiText(m_settings, "Обнаружена новая версия: %1", "New version detected: %1").arg(latestClean)
-                : uiText(m_settings, "Установлена актуальная версия: %1", "Current version is installed: %1").arg(current),
+                ? uiText(m_settings, "Доступна новая версия: %1", "New version is available: %1").arg(latestClean)
+                : uiText(m_settings, "Установленна актуальная версия: %1", "Current version is installed: %1").arg(current),
             &dialog
         );
         title->setObjectName(QStringLiteral("sectionLabel"));
         QFont titleFont = title->font();
-        titleFont.setPointSize(qMax(titleFont.pointSize() + 3, 14));
+        titleFont.setPointSize(qMax(titleFont.pointSize() + 6, 18));
         titleFont.setBold(true);
         title->setFont(titleFont);
         title->setWordWrap(true);
@@ -1071,6 +1088,7 @@ void MainWindow::checkForUpdates(bool automatic) {
         notes->setWordWrap(true);
         notes->setTextInteractionFlags(Qt::TextSelectableByMouse);
         notes->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        notes->setMaximumHeight(62);
         root->addWidget(notes, 1);
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
         if (hasUpdate) {

@@ -749,6 +749,47 @@ bool pingHealthBrushes(const QString& value, QColor* background, QColor* foregro
     return true;
 }
 
+QString pingHealthRichText(const QString& value, const QColor& background, const QColor& foreground) {
+    static const QRegularExpression pingRe(QStringLiteral("(\\d+\\s*ms)"), QRegularExpression::CaseInsensitiveOption);
+    const auto match = pingRe.match(value);
+    if (!match.hasMatch()) {
+        return value.toHtmlEscaped();
+    }
+
+    const QString before = value.left(match.capturedStart(1)).toHtmlEscaped();
+    const QString ping = match.captured(1).toHtmlEscaped();
+    const QString after = value.mid(match.capturedEnd(1)).toHtmlEscaped();
+    return QStringLiteral("%1<span style=\"background:%2;color:%3;font-weight:700;padding:1px 5px;\">%4</span>%5")
+        .arg(before, background.name(), foreground.name(), ping, after);
+}
+
+void setPingHealthCellWidget(QTableWidget* table, int row, int column, const QString& value, bool enabled, const QColor& background, const QColor& foreground) {
+    if (table == nullptr) {
+        return;
+    }
+
+    if (!enabled) {
+        if (table->cellWidget(row, column) != nullptr) {
+            table->removeCellWidget(row, column);
+        }
+        return;
+    }
+
+    auto* label = qobject_cast<QLabel*>(table->cellWidget(row, column));
+    if (label == nullptr) {
+        if (table->cellWidget(row, column) != nullptr) {
+            table->removeCellWidget(row, column);
+        }
+        label = new QLabel(table);
+        label->setTextFormat(Qt::RichText);
+        label->setAlignment(Qt::AlignCenter);
+        label->setAttribute(Qt::WA_TransparentForMouseEvents);
+        label->setStyleSheet(QStringLiteral("QLabel { background: transparent; padding: 0 2px; }"));
+        table->setCellWidget(row, column, label);
+    }
+    label->setText(pingHealthRichText(value, background, foreground));
+}
+
 struct SnmpParsedLine {
     QString oid;
     QString rawType;
