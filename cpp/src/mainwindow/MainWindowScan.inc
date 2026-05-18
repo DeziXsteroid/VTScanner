@@ -1186,24 +1186,30 @@ void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int duration
     m_scanPolishingActive = true;
     const quint64 finishedGeneration = m_currentScanGeneration;
     const QList<nt::ScanRecord> previousRows = m_scanRows;
-    QList<nt::ScanRecord> sortedRecords = records;
-    for (auto& record : sortedRecords) {
-        const auto previousIt = std::find_if(previousRows.constBegin(), previousRows.constEnd(), [&](const nt::ScanRecord& previous) {
-            return previous.ip == record.ip;
+    QList<nt::ScanRecord> displayRecords = previousRows;
+    QSet<QString> includedIps;
+    for (auto& existing : displayRecords) {
+        if (existing.ip.trimmed().isEmpty()) {
+            continue;
+        }
+        includedIps.insert(existing.ip);
+        const auto currentIt = std::find_if(records.constBegin(), records.constEnd(), [&](const nt::ScanRecord& current) {
+            return current.ip == existing.ip;
         });
-        if (previousIt != previousRows.constEnd()) {
-            mergeScanDisplayFields(record, *previousIt);
+        if (currentIt != records.constEnd()) {
+            nt::ScanRecord merged = *currentIt;
+            mergeScanDisplayFields(merged, existing);
+            existing = merged;
         }
     }
-    for (const auto& previous : previousRows) {
-        const auto currentIt = std::find_if(sortedRecords.constBegin(), sortedRecords.constEnd(), [&](const nt::ScanRecord& current) {
-            return current.ip == previous.ip;
-        });
-        if (currentIt == sortedRecords.constEnd()) {
-            sortedRecords.append(previous);
+    for (auto record : records) {
+        if (record.ip.trimmed().isEmpty() || includedIps.contains(record.ip)) {
+            continue;
         }
+        displayRecords.append(record);
+        includedIps.insert(record.ip);
     }
-    m_scanRows = sortedRecords;
+    m_scanRows = displayRecords;
     rebuildScanTable();
     if (m_scanTable != nullptr) {
         m_scanTable->viewport()->update();
