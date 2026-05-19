@@ -37,6 +37,7 @@
 
 Professional desktop utility for network discovery, device inspection, transport testing, and remote session work.<br>
 The application is focused on fast scanning, compact control panels, stable native behavior, and a clean production-style interface.
+*H in ver - big bugs fixes *R in ver - big new functions
 
 </div>
 
