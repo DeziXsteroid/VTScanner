@@ -9,7 +9,7 @@
 
 <a href="https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest/download/Network-Tools-macos-apple-silicon.dmg"><img align="middle" style="vertical-align: middle;" alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS%20Apple%20Silicon-111111?style=for-the-badge&logo=apple&logoColor=white"></a>
 <img align="middle" style="vertical-align: middle;" src="https://img.shields.io/badge/-or-0D1117?style=for-the-badge&labelColor=0D1117&color=0D1117">
-<a href="https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest/download/Network-Tools-1.3-Setup-win64.exe"><img align="middle" style="vertical-align: middle;" alt="Download Windows X64" src="https://img.shields.io/badge/Download-Windows%20X64-0078D4?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTEgNC41IDEwLjUgM3Y4LjVIMVY0LjV6bTEwLjUtMS43TDIzIDF2MTAuNUgxMS41VjIuOHpNMSAxMi41aDkuNVYyMUwxIDE5LjV2LTd6bTEwLjUgMEgyM1YyM2wtMTEuNS0xLjh2LTguN3oiLz48L3N2Zz4="></a>
+<a href="https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest/download/Network-Tools-1.3.1-Setup-win64.exe"><img align="middle" style="vertical-align: middle;" alt="Download Windows X64" src="https://img.shields.io/badge/Download-Windows%20X64-0078D4?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTEgNC41IDEwLjUgM3Y4LjVIMVY0LjV6bTEwLjUtMS43TDIzIDF2MTAuNUgxMS41VjIuOHpNMSAxMi41aDkuNVYyMUwxIDE5LjV2LTd6bTEwLjUgMEgyM1YyM2wtMTEuNS0xLjh2LTguN3oiLz48L3N2Zz4="></a>
 
 </div>
 
@@ -27,7 +27,7 @@
 
 ## Install from Windows Terminal
 
-<code>Invoke-WebRequest -UseBasicParsing "https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest/download/Network-Tools-1.3-Setup-win64.exe" -OutFile "$env:TEMP\Network-Tools-1.3-Setup-win64.exe"; Start-Process "$env:TEMP\Network-Tools-1.3-Setup-win64.exe"</code>
+<code>Invoke-WebRequest -UseBasicParsing "https://github.com/DeziXsteroid/Universal_Network_Tools/releases/latest/download/Network-Tools-1.3.1-Setup-win64.exe" -OutFile "$env:TEMP\Network-Tools-1.3.1-Setup-win64.exe"; Start-Process "$env:TEMP\Network-Tools-1.3.1-Setup-win64.exe"</code>
 
 </div>
 

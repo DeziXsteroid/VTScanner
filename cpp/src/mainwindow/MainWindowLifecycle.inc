@@ -216,7 +216,6 @@ MainWindow::MainWindow(QWidget* parent)
         m_scanLaunchPending = false;
         m_scanBackgroundRefreshRun = false;
         m_scanPolishingActive = false;
-        appendScanLogLine(QStringLiteral("failed error=%1").arg(errorText));
         if (backgroundRefresh) {
             if (m_scanStartButton != nullptr) {
                 m_scanStartButton->setEnabled(true);
@@ -269,8 +268,6 @@ MainWindow::MainWindow(QWidget* parent)
         cursor.insertText(localizedRequestStatusDivider(), textFormat);
         cursor.insertBlock();
         cursor.insertText(statusText.trimmed(), statusFormat);
-        cursor.insertBlock();
-        cursor.insertText(QStringLiteral("%1 %2").arg(response.method, response.url), textFormat);
         cursor.insertBlock();
         setHttpBlockAlignment(Qt::AlignHCenter);
         cursor.insertText(localizedRequestBodyDivider(), textFormat);
@@ -412,18 +409,37 @@ bool MainWindow::eventFilter(QObject* object, QEvent* event) {
         }
         return QMainWindow::eventFilter(object, event);
     }
-    if (object == m_requestResponseEdit && event->type() == QEvent::MouseButtonDblClick) {
+    if (event->type() == QEvent::MouseButtonDblClick
+        && object != nullptr
+        && object->property("ssh_key_file_picker").toBool()) {
+        auto* widget = qobject_cast<QWidget*>(object);
+        auto* keyEdit = widget != nullptr ? qobject_cast<QPlainTextEdit*>(widget->parentWidget()) : nullptr;
+        if (keyEdit != nullptr) {
+            const QString path = QFileDialog::getOpenFileName(this, uiText(m_settings, "Выбрать SSH ключ", "Choose SSH key"));
+            if (!path.isEmpty()) {
+                keyEdit->setPlainText(QDir::toNativeSeparators(path));
+            }
+            return true;
+        }
+    }
+    const bool isHttpResponsePanel = object == m_requestResponseEdit
+        || (m_requestResponseEdit != nullptr && object == m_requestResponseEdit->viewport());
+    if (isHttpResponsePanel && event->type() == QEvent::MouseButtonDblClick) {
         const QString body = m_requestResponseEdit != nullptr ? m_requestResponseEdit->property("latest_http_body").toString() : QString();
         if (!body.isEmpty()) {
-            QTextCursor cursor(m_requestResponseEdit->document());
-            cursor.movePosition(QTextCursor::End);
             QTextCharFormat textFormat;
             textFormat.setFont(fixedFont());
             textFormat.setForeground(isLightTheme() ? QColor("#1f2730") : QColor("#eef2f6"));
+            const QString hiddenMessage = uiText(m_settings, "Тело ответа скрыто. Двойной клик по панели раскроет его.", "Response body is hidden. Double-click the panel to expand it.");
+            QTextCursor cursor = m_requestResponseEdit->document()->find(hiddenMessage);
+            if (cursor.isNull()) {
+                cursor = QTextCursor(m_requestResponseEdit->document());
+                cursor.movePosition(QTextCursor::End);
+            }
+            cursor.insertText(body, textFormat);
             QTextBlockFormat blockFormat = cursor.blockFormat();
             blockFormat.setAlignment(Qt::AlignLeft);
             cursor.setBlockFormat(blockFormat);
-            cursor.insertText(body, textFormat);
             cursor.insertBlock();
             cursor.insertBlock();
             m_requestResponseEdit->setProperty("latest_http_body", QString());

@@ -744,7 +744,7 @@ void MainWindow::openSessionSettings(const QString& kind, SessionWidgets& widget
     QDialog dialog(this);
     const bool isSsh = kind == QStringLiteral("ssh");
     dialog.setWindowTitle(isSsh ? QStringLiteral("SSH settings") : QStringLiteral("Telnet settings"));
-    dialog.resize(isSsh ? QSize(560, 360) : QSize(360, 150));
+    dialog.resize(isSsh ? QSize(500, 300) : QSize(360, 150));
     auto* root = new QVBoxLayout(&dialog);
     root->setContentsMargins(10, 10, 10, 10);
     root->setSpacing(8);
@@ -773,24 +773,12 @@ void MainWindow::openSessionSettings(const QString& kind, SessionWidgets& widget
             "Вставьте приватный ключ или путь к файлу ключа. Если ключ задан, пароль можно не вводить.",
             "Paste a private key or a key file path. If a key is set, password can be empty."
         ));
-        keyEdit->setMaximumHeight(150);
+        keyEdit->setMaximumHeight(118);
         keyEdit->setPlainText(currentSessionProfile(widgets, 22).sshPrivateKey);
+        keyEdit->viewport()->setProperty("ssh_key_file_picker", true);
+        keyEdit->viewport()->installEventFilter(this);
         keyLayout->addWidget(keyEdit);
-        auto* keyButtons = new QHBoxLayout();
-        auto* chooseButton = new QPushButton(uiText(m_settings, "Выбрать файл", "Choose file"), keyBox);
-        auto* clearButton = new QPushButton(uiText(m_settings, "Очистить", "Clear"), keyBox);
-        keyButtons->addStretch(1);
-        keyButtons->addWidget(chooseButton);
-        keyButtons->addWidget(clearButton);
-        keyLayout->addLayout(keyButtons);
         root->addWidget(keyBox);
-        connect(chooseButton, &QPushButton::clicked, &dialog, [this, keyEdit]() {
-            const QString path = QFileDialog::getOpenFileName(this, uiText(m_settings, "Выбрать SSH ключ", "Choose SSH key"));
-            if (!path.isEmpty()) {
-                keyEdit->setPlainText(QDir::toNativeSeparators(path));
-            }
-        });
-        connect(clearButton, &QPushButton::clicked, keyEdit, &QPlainTextEdit::clear);
     }
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
@@ -997,7 +985,7 @@ void MainWindow::checkForUpdates(bool automatic) {
         return;
     }
     QNetworkRequest request(QUrl(QStringLiteral("https://api.github.com/repos/DeziXsteroid/Universal_Network_Tools/releases/latest")));
-    request.setRawHeader("User-Agent", QByteArrayLiteral("NetworkToolsQt/1.3"));
+    request.setRawHeader("User-Agent", QByteArrayLiteral("NetworkToolsQt/1.3.1"));
     request.setRawHeader("Accept", QByteArrayLiteral("application/vnd.github+json"));
     auto* reply = m_updateManager->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply, automatic]() {
@@ -1036,10 +1024,10 @@ void MainWindow::checkForUpdates(bool automatic) {
 
         QDialog dialog(this);
         dialog.setWindowTitle(uiText(m_settings, "Помощь и обновления", "Help and Updates"));
-        dialog.resize(380, 170);
+        dialog.resize(460, 230);
         auto* root = new QVBoxLayout(&dialog);
-        root->setContentsMargins(10, 7, 10, 7);
-        root->setSpacing(5);
+        root->setContentsMargins(12, 10, 12, 10);
+        root->setSpacing(7);
         auto* title = new QLabel(
             hasUpdate
                 ? uiText(m_settings, "Доступна новая версия: %1", "New version is available: %1").arg(latestClean)
@@ -1048,9 +1036,10 @@ void MainWindow::checkForUpdates(bool automatic) {
         );
         title->setObjectName(QStringLiteral("sectionLabel"));
         QFont titleFont = title->font();
-        titleFont.setPointSize(qMax(titleFont.pointSize() + 6, 18));
+        titleFont.setPointSize(qMax(titleFont.pointSize() + 12, 26));
         titleFont.setBold(true);
         title->setFont(titleFont);
+        title->setStyleSheet(QStringLiteral("QLabel { font-size: 26px; font-weight: 800; line-height: 115%; }"));
         title->setWordWrap(true);
         QPushButton* updateButton = nullptr;
         root->addWidget(title);
@@ -1081,7 +1070,7 @@ void MainWindow::checkForUpdates(bool automatic) {
         notes->setWordWrap(true);
         notes->setTextInteractionFlags(Qt::TextSelectableByMouse);
         notes->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-        notes->setMaximumHeight(62);
+        notes->setMaximumHeight(88);
         root->addWidget(notes, 1);
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
         if (hasUpdate) {
@@ -1136,7 +1125,38 @@ void MainWindow::checkForUpdates(bool automatic) {
                         return;
                     }
                     file.close();
+#ifdef Q_OS_WIN
+                    const QString appPath = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+                    const QString installedApp = QDir::toNativeSeparators(
+                        QDir(qEnvironmentVariable("ProgramFiles", QStringLiteral("C:\\Program Files")))
+                            .filePath(QStringLiteral("Network Tools/NetworkToolsQt.exe"))
+                    );
+                    const QString batchPath = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+                        .filePath(QStringLiteral("NetworkToolsUpdate.cmd"));
+                    QFile batch(batchPath);
+                    if (batch.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+                        QTextStream script(&batch);
+                        script << "@echo off\r\n"
+                               << "timeout /t 1 /nobreak >nul\r\n"
+                               << "\"" << QDir::toNativeSeparators(path) << "\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS\r\n"
+                               << "if exist \"" << installedApp << "\" (\r\n"
+                               << "  start \"\" \"" << installedApp << "\"\r\n"
+                               << ") else if exist \"" << appPath << "\" (\r\n"
+                               << "  start \"\" \"" << appPath << "\"\r\n"
+                               << ")\r\n";
+                        batch.close();
+                        QProcess::startDetached(QStringLiteral("cmd.exe"), {QStringLiteral("/c"), batchPath});
+                    } else {
+                        QProcess::startDetached(path, {
+                            QStringLiteral("/VERYSILENT"),
+                            QStringLiteral("/SUPPRESSMSGBOXES"),
+                            QStringLiteral("/NORESTART"),
+                            QStringLiteral("/CLOSEAPPLICATIONS")
+                        });
+                    }
+#else
                     QProcess::startDetached(path, QStringList{});
+#endif
                     qApp->quit();
                 });
                 dialog.accept();

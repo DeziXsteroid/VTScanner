@@ -14,7 +14,6 @@ public:
     static QString vendorSeedPath();
     static QString bundledToolPath(const QString& name);
     static QString settingsPath();
-    static QString logsDir();
     static void ensureRuntimeTree();
 };
 

@@ -215,13 +215,6 @@ void MainWindow::startScanBackgroundRefresh() {
     const QString scanProfile = m_settings->scanProfile();
     const bool autoWorkers = m_settings->value(QStringLiteral("scan_auto_workers"), true).toBool(true);
     const int scanWorkers = autoWorkers ? autoScanWorkerCountForProfile(scanProfile) : m_settings->scanWorkers();
-    appendScanLogLine(QStringLiteral("background_refresh_start range=%1-%2 adapter=%3 profile=%4 workers=%5")
-        .arg(m_scanStartIp != nullptr ? m_scanStartIp->text().trimmed() : QString())
-        .arg(m_scanEndIp != nullptr ? m_scanEndIp->text().trimmed() : QString())
-        .arg(m_scanAdapterCombo != nullptr ? m_scanAdapterCombo->currentData().toString() : QString())
-        .arg(scanProfile)
-        .arg(scanWorkers));
-
     m_scanner->start(
         m_scanStartIp->text().trimmed(),
         m_scanEndIp->text().trimmed(),
@@ -275,14 +268,6 @@ void MainWindow::startScan() {
     m_lastScanStartIp = m_scanStartIp->text().trimmed();
     m_lastScanEndIp = m_scanEndIp->text().trimmed();
     m_lastScanAdapterId = m_scanAdapterCombo->currentData().toString();
-    resetScanLog();
-    appendScanLogLine(QStringLiteral("start range=%1-%2 adapter=%3 profile=%4 workers=%5 auto_workers=%6")
-        .arg(m_scanStartIp != nullptr ? m_scanStartIp->text().trimmed() : QString())
-        .arg(m_scanEndIp != nullptr ? m_scanEndIp->text().trimmed() : QString())
-        .arg(m_scanAdapterCombo != nullptr ? m_scanAdapterCombo->currentData().toString() : QString())
-        .arg(scanProfile)
-        .arg(scanWorkers)
-        .arg(autoWorkers ? QStringLiteral("true") : QStringLiteral("false")));
     clearScanTable();
     m_scanRows.clear();
     m_scanNewIps.clear();
@@ -338,7 +323,6 @@ void MainWindow::stopScan() {
     if (m_scanFooterThreadsLabel != nullptr) {
         m_scanFooterThreadsLabel->setText(localizedFoundDevicesText(m_settings, m_scanRows.size()));
     }
-    appendScanLogLine(QStringLiteral("%1 devices=%2").arg(backgroundRefresh ? QStringLiteral("background_refresh_stop") : QStringLiteral("stop")).arg(m_scanRows.size()));
     updateScanFooter(backgroundRefresh
         ? uiText(m_settings, "Фоновое обновление остановлено", "Background refresh stopped")
         : (m_scanAutoScanCheck != nullptr && m_scanAutoScanCheck->isChecked()
@@ -829,36 +813,6 @@ void MainWindow::saveScanColumnWidths() const {
     m_settings->save();
 }
 
-void MainWindow::resetScanLog() {
-    m_scanLogPath = ipScanLogPath();
-    QFile file(m_scanLogPath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        return;
-    }
-    QTextStream out(&file);
-    out << "Network Tools IP scan log\n";
-    out << "started_at=" << QDateTime::currentDateTime().toString(Qt::ISODateWithMs) << '\n';
-}
-
-void MainWindow::appendScanLogLine(const QString& line) {
-    if (m_scanLogPath.isEmpty()) {
-        m_scanLogPath = ipScanLogPath();
-    }
-    QFile file(m_scanLogPath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-        return;
-    }
-    QTextStream out(&file);
-    out << '[' << QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss.zzz")) << "] " << line << '\n';
-}
-
-void MainWindow::openScanLog() {
-    if (m_scanLogPath.isEmpty()) {
-        m_scanLogPath = ipScanLogPath();
-    }
-    openIpScanLogFile();
-}
-
 void MainWindow::updateScanSortButton() {
     if (m_scanSortButton == nullptr) {
         return;
@@ -982,19 +936,6 @@ void MainWindow::appendScanRecord(const nt::ScanRecord& record) {
     if (m_scanCompareMode && m_scanCompareHasBaseline && !m_scanComparisonBaseline.contains(displayRecord.ip)) {
         m_scanNewIps.insert(displayRecord.ip);
     }
-    appendScanLogLine(QStringLiteral("%1 ip=%2 status=%3 ping=%4 mac=%5 vendor=%6 hostname=%7 web=%8 gateway=%9 ports=%10 type=%11")
-        .arg(updated ? QStringLiteral("update") : QStringLiteral("found"))
-        .arg(displayRecord.ip)
-        .arg(localizedHostStatusText(m_settings, displayRecord.status))
-        .arg(displayCellValue(m_settings, displayRecord.pingDisplay, QStringLiteral("[n/a]")))
-        .arg(displayCellValue(m_settings, displayRecord.mac, QStringLiteral("-")))
-        .arg(displayCellValue(m_settings, displayRecord.vendor, QStringLiteral("unknown vendor")))
-        .arg(normalizedHostNameText(m_settings, displayRecord.hostName))
-        .arg(normalizedWebDetectText(m_settings, displayRecord.webDetect))
-        .arg(displayCellValue(m_settings, displayRecord.gateway, QStringLiteral("-")))
-        .arg(scanPortCellText(m_settings, displayRecord.port))
-        .arg(normalizedTypeText(m_settings, displayRecord.typeHint)));
-
     int rowIndex = findRowByIp(m_scanTable, displayRecord.ip);
     if (rowIndex < 0) {
         rowIndex = insertionRowForIp(m_scanTable, displayRecord.ip, m_scanSortAscending);
@@ -1149,7 +1090,6 @@ void MainWindow::finalizeScanBackgroundRefresh(const QList<nt::ScanRecord>& reco
         m_scanNewIps.remove(previous.ip);
         m_scanComparisonBaseline.remove(previous.ip);
         ++removed;
-        appendScanLogLine(QStringLiteral("background_refresh_removed ip=%1 misses=%2").arg(previous.ip).arg(missCount));
     }
 
     m_scanBackgroundRefreshRun = false;
@@ -1168,11 +1108,6 @@ void MainWindow::finalizeScanBackgroundRefresh(const QList<nt::ScanRecord>& reco
     refreshScanComparisonBadges();
     applyScanTableFilter();
     updateScanFooter(localizedScanRefreshFinishedText(m_settings, updated, added, removed, durationMs));
-    appendScanLogLine(QStringLiteral("background_refresh_finished updated=%1 added=%2 removed=%3 duration_ms=%4")
-        .arg(updated)
-        .arg(added)
-        .arg(removed)
-        .arg(durationMs));
     updateScanBackgroundRefreshTimer();
 }
 
@@ -1237,9 +1172,6 @@ void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int duration
         updateScanSummary();
         updateSelectedHostPanel();
         updateScanFooter(uiText(m_settings, "Повторный проход сканирования: уточняю устройства и MAC.", "Second scan pass: refining devices and MAC addresses."));
-        appendScanLogLine(QStringLiteral("followup_scan_start range=%1-%2 adapter=%3 profile=%4 workers=%5")
-            .arg(m_lastScanStartIp, m_lastScanEndIp, m_lastScanAdapterId, m_lastScanProfile)
-            .arg(m_lastScanWorkers));
         QTimer::singleShot(500, this, [this, generation = m_currentScanGeneration]() {
             if (generation != m_currentScanGeneration
                 || m_scanner == nullptr
@@ -1292,7 +1224,6 @@ void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int duration
     updateSelectedHostPanel();
     m_scanRefreshMisses.clear();
     updateScanFooter(localizedScanPolishingText(m_settings));
-    appendScanLogLine(QStringLiteral("main_scan_finished devices=%1 duration_ms=%2 polishing=true").arg(m_scanRows.size()).arg(durationMs));
     QTimer::singleShot(10500, this, [this, finishedGeneration, durationMs]() {
         if (finishedGeneration != m_currentScanGeneration
             || m_scanner == nullptr
@@ -1301,7 +1232,6 @@ void MainWindow::finalizeScan(const QList<nt::ScanRecord>& records, int duration
             return;
         }
         m_scanPolishingActive = false;
-        appendScanLogLine(QStringLiteral("finished duration_ms=%1").arg(durationMs));
         updateScanFooter(localizedScanFinishedText(m_settings, durationMs));
         updateScanBackgroundRefreshTimer();
     });

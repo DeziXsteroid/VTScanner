@@ -1565,7 +1565,7 @@ QString fetchHttpText(const QUrl& url, int timeoutMs) {
     request += path.toUtf8();
     request += " HTTP/1.0\r\nHost: ";
     request += url.host().toUtf8();
-    request += "\r\nUser-Agent: NetworkToolsQt/1.3\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+    request += "\r\nUser-Agent: NetworkToolsQt/1.3.1\r\nAccept: */*\r\nConnection: close\r\n\r\n";
     socket.write(request);
     if (!socket.waitForBytesWritten(boundedTimeout)) {
         return {};

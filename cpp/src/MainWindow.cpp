@@ -193,31 +193,6 @@ int autoScanWorkerCountForProfile(const QString& profile) {
     return qBound(16, cores * 5, 48);
 }
 
-QString ipScanLogPath() {
-    nt::AppPaths::ensureRuntimeTree();
-    return QDir(nt::AppPaths::logsDir()).filePath(QStringLiteral("ip-scan.log"));
-}
-
-void ensureIpScanLogExists(const QString& path) {
-    if (QFileInfo::exists(path)) {
-        return;
-    }
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        return;
-    }
-    QTextStream out(&file);
-    out << "Network Tools IP scan log\n";
-    out << "created_at=" << QDateTime::currentDateTime().toString(Qt::ISODateWithMs) << '\n';
-    out << "no scan has been started in this session yet\n";
-}
-
-void openIpScanLogFile() {
-    const QString path = ipScanLogPath();
-    ensureIpScanLogExists(path);
-    QDesktopServices::openUrl(QUrl::fromLocalFile(path));
-}
-
 QString uiText(const QString& language, const char* ru, const char* en) {
     return QString::fromUtf8(language == QStringLiteral("en") ? en : ru);
 }
@@ -1733,15 +1708,6 @@ public:
         });
         refreshAutoWorkersState();
 
-        auto* openLogsButton = new QPushButton(uiText(language, "Логи", "open logs"), this);
-        openLogsButton->setObjectName(QStringLiteral("textLinkButton"));
-        openLogsButton->setFlat(true);
-        openLogsButton->setCursor(Qt::PointingHandCursor);
-        openLogsButton->setToolTip(uiText(language, "Открыть лог последнего скана", "Open last scan log"));
-        connect(openLogsButton, &QPushButton::clicked, this, []() {
-            openIpScanLogFile();
-        });
-
         auto* checks = new QHBoxLayout();
         checks->setContentsMargins(0, 0, 0, 0);
         checks->setSpacing(6);
@@ -1750,7 +1716,6 @@ public:
         checks->addWidget(m_scanOnStartupCheck);
         checks->addWidget(m_routedScanCheck);
         checks->addStretch(1);
-        checks->addWidget(openLogsButton);
         root->addLayout(checks);
 
         auto* uiForm = new QFormLayout();

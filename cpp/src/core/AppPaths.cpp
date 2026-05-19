@@ -58,15 +58,10 @@ QString AppPaths::settingsPath() {
     return appDataDir() + QStringLiteral("/settings.json");
 }
 
-QString AppPaths::logsDir() {
-    return appDataDir() + QStringLiteral("/logs");
-}
-
 void AppPaths::ensureRuntimeTree() {
     QDir().mkpath(appDataDir());
     QDir().mkpath(dataDir());
     QDir().mkpath(snapshotDir());
-    QDir().mkpath(logsDir());
 }
 
 } // namespace nt

@@ -340,6 +340,7 @@ QWidget* MainWindow::createRequestPage() {
     m_requestResponseEdit->setObjectName(QStringLiteral("httpResponsePanel"));
     m_requestResponseEdit->setLineWrapMode(QTextEdit::NoWrap);
     m_requestResponseEdit->installEventFilter(this);
+    m_requestResponseEdit->viewport()->installEventFilter(this);
     root->addWidget(m_requestResponseEdit, 3);
 
     auto* controls = new QGroupBox(uiText(language, "Запрос", "Request"), page);
@@ -1323,9 +1324,7 @@ void MainWindow::configureMenuBar() {
                 "Transport modules:\n"
                 "Serial, TCP, and UDP support both text exchange and arbitrary binary / HEX payloads, including VISCA-level control commands and similar protocols.\n\n"
                 "Safety and operation:\n"
-                "Use only trusted network segments and verified credentials. Before running in production, verify network policies, addresses, ports, and auto-scan scenarios.\n\n"
-                "Traffic logs:\n"
-                "The green arrow marks outgoing commands, the blue arrow marks incoming responses. With HEX enabled, data is shown in hexadecimal form for both send and receive."
+                "Use only trusted network segments and verified credentials. Before running in production, verify network policies, addresses, ports, and auto-scan scenarios."
             )
         );
     });

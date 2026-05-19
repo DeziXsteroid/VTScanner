@@ -176,9 +176,6 @@ private:
     void updateScanPingHealthButton();
     void setScanPingHealthColors(bool enabled);
     void setScanProfile(const QString& profile);
-    void resetScanLog();
-    void appendScanLogLine(const QString& line);
-    void openScanLog();
     bool scanBackgroundRefreshEnabled() const;
     void updateScanBackgroundRefreshTimer();
     void startScanBackgroundRefresh();
@@ -309,7 +306,6 @@ private:
     bool m_scanFollowupRunning {false};
     bool m_scanStopRequested {false};
     bool m_scanRestartAfterStop {false};
-    QString m_scanLogPath;
     QString m_lastScanStartIp;
     QString m_lastScanEndIp;
     QString m_lastScanAdapterId;
